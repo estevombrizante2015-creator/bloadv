@@ -375,3 +375,64 @@ Restante em [backend/.env.example](backend/.env.example).
 
 O horário de atendimento em [firm.config.js](backend/src/domain/firm.config.js) está
 como *segunda a sexta, 9h–18h* — ajuste para a rotina real antes de subir.
+
+---
+
+## Deploy no Railway
+
+O repositório é um monorepo: não há `package.json` na raiz, então o Railpack não
+consegue adivinhar o que construir a partir dela. **São dois serviços**, cada um
+apontando para uma pasta.
+
+### Backend
+
+| Ajuste | Valor |
+|---|---|
+| **Root Directory** | `backend` |
+| Build / Start | vêm de [backend/railway.json](backend/railway.json) |
+| Healthcheck | `/health` |
+| Replicas | **1** — ver volume abaixo |
+
+**Volume obrigatório**, montado em `/app/sessions`. As credenciais do Baileys são
+arquivos em disco; sem volume, todo deploy derruba o pareamento e o escritório
+precisa ler o QR de novo em cada número. É também o motivo de uma réplica só:
+duas instâncias com a mesma sessão Signal derrubam a conta.
+
+Variáveis (as demais em [backend/.env.example](backend/.env.example)):
+
+```
+NODE_ENV=production
+OPENAI_API_KEY=sk-...
+MONGO_URI=...                      # Atlas ou o serviço Mongo do Railway
+JWT_SECRET=...                     # node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+CORS_ORIGIN=https://SEU-FRONTEND.up.railway.app
+```
+
+`PORT` o Railway injeta sozinho. `CORS_ORIGIN` é a origem exata do painel, com
+`https://` e sem barra final: em produção a liberação de rede local está
+desligada, então errar aqui vira `Failed to fetch` no navegador.
+
+Depois do primeiro deploy, crie o acesso ao painel pelo shell do serviço:
+
+```bash
+npm run create:user -- voce@escritorio.com "sua-senha-forte" --admin
+```
+
+### Frontend
+
+| Ajuste | Valor |
+|---|---|
+| **Root Directory** | `frontend` |
+| Build / Start | vêm de [frontend/railway.json](frontend/railway.json) |
+
+```
+NEXT_PUBLIC_API_URL=https://SEU-BACKEND.up.railway.app
+```
+
+`NEXT_PUBLIC_*` entra no bundle **no build**, não em tempo de execução: mudar essa
+variável exige redeploy do frontend, não só restart.
+
+### Ordem
+
+Suba o backend primeiro para conhecer a URL dele, aponte o frontend, e então volte
+ao backend para preencher `CORS_ORIGIN` com a URL do painel.

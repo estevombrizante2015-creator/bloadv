@@ -2,6 +2,9 @@
   "name": "whatsagent-backend",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22 <23"
+  },
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
