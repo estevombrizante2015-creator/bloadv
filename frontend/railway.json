@@ -2,10 +2,10 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "RAILPACK",
-    "buildCommand": "npm ci --include=dev && npm run build"
+    "buildCommand": "npm ci --include=dev && NODE_ENV=production npm run build"
   },
   "deploy": {
-    "startCommand": "npm start",
+    "startCommand": "NODE_ENV=production npm start",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
