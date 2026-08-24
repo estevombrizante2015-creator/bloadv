@@ -13,6 +13,28 @@ const int = (v, def) => {
 const list = (v, def = []) =>
   (v ? String(v).split(',') : def).map((s) => s.trim()).filter(Boolean);
 
+/**
+ * Normaliza origens de CORS.
+ *
+ * O navegador manda o header `Origin` sem barra final e com host em
+ * minusculas, sempre. Mas quem preenche a variavel no painel do Railway cola a
+ * URL da barra do navegador - que vem com barra - ou entre aspas. Comparar
+ * cru reprova a origem certa, e o painel morre num "Failed to fetch" que nao
+ * diz nada sobre a causa.
+ */
+const origins = (v, def = []) =>
+  list(v, def).map((o) => {
+    const semAspas = o.replace(/^['"]|['"]$/g, '').trim();
+    if (semAspas === '*') return semAspas;
+    const semBarra = semAspas.replace(/\/+$/, '');
+    try {
+      const { protocol, host } = new URL(semBarra);
+      return `${protocol}//${host}`.toLowerCase();
+    } catch {
+      return semBarra;
+    }
+  });
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: int(process.env.PORT, 3001),
@@ -21,7 +43,7 @@ const env = {
   // foi assim que o Socket.IO parou de conectar e o QR nunca chegava na tela.
   host: process.env.HOST || '::',
   logLevel: process.env.LOG_LEVEL || 'info',
-  corsOrigin: list(process.env.CORS_ORIGIN, ['http://localhost:3000']),
+  corsOrigin: origins(process.env.CORS_ORIGIN, ['http://localhost:3000']),
   // Em desenvolvimento tambem valem localhost/127.0.0.1 em qualquer porta e a
   // rede local - abrir o painel pelo IP da maquina (para ler o QR do celular)
   // nao pode virar "Failed to fetch".
