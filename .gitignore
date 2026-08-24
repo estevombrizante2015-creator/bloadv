@@ -1,0 +1,72 @@
+# ---------- Dependencias ----------
+node_modules/
+.pnp
+.pnp.js
+jspm_packages/
+
+# ---------- Segredos / credenciais ----------
+.env
+.env.*
+!.env.example
+!*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets/
+credentials/
+service-account*.json
+
+# ---------- Sessoes WhatsApp (Baileys) ----------
+# NUNCA versionar: contem chaves Signal e permite sequestro da conta
+backend/sessions/
+sessions/
+auth_info*/
+*.session
+creds.json
+app-state-sync-*.json
+pre-key-*.json
+sender-key-*.json
+session-*.json
+
+# ---------- Dados / uploads / midia ----------
+data/
+uploads/
+media/
+tmp/
+*.sqlite
+*.sqlite3
+dump/
+mongo-data/
+
+# ---------- Build ----------
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------- Logs ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- Cache / ferramentas ----------
+.cache/
+.eslintcache
+coverage/
+.vercel
+.DS_Store
+Thumbs.db
+
+# ---------- Editores ----------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+/**
+ * Paleta da identidade: azul-marinho profundo e dourado, tirados da marca
+ * Barbosa, Loli e Oliveira. Registrada em @theme para virar utilitario do
+ * Tailwind (bg-navy-900, text-gold-400, border-gold-500/30 etc.).
+ */
+@theme {
+  --color-navy-950: #050c1a;
+  --color-navy-900: #081428;
+  --color-navy-850: #0b1c38;
+  --color-navy-800: #10264a;
+  --color-navy-700: #17355f;
+  --color-navy-600: #21467a;
+
+  --color-gold-200: #f4e7c3;
+  --color-gold-300: #e6cf95;
+  --color-gold-400: #d4b36a;
+  --color-gold-500: #c09a4b;
+  --color-gold-600: #a17d33;
+
+  --color-cream: #f5f2ea;
+  --color-parchment: #ddd6c6;
+  --color-muted: #8fa0bd;
+
+  --font-display: var(--font-cinzel), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/**
+ * Resets ficam em @layer base de proposito.
+ * Regra sem layer vence TODA regra em layer no Tailwind v4 - um
+ * `* { padding: 0 }` solto aqui anula silenciosamente todo utilitario
+ * de espacamento da aplicacao.
+ */
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--color-navy-950);
+    color: var(--color-cream);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: var(--color-gold-400);
+    color: var(--color-navy-950);
+  }
+
+  /* Foco visivel e consistente, sem o outline azul padrao do navegador. */
+  :focus-visible {
+    outline: 2px solid var(--color-gold-400);
+    outline-offset: 2px;
+  }
+
+  input::placeholder {
+    color: color-mix(in srgb, var(--color-muted) 65%, transparent);
+  }
+
+  /* Preenchimento automatico do navegador nao pode voltar ao fundo branco. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--color-cream);
+    -webkit-box-shadow: 0 0 0 1000px var(--color-navy-850) inset;
+    caret-color: var(--color-cream);
+    transition: background-color 9999s ease-in-out 0s;
+  }
+}
+
+@layer components {
+  /* Fio dourado com as pontas esmaecidas, usado como separador da marca. */
+  .rule-gold {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--color-gold-500) 25%,
+      var(--color-gold-300) 50%,
+      var(--color-gold-500) 75%,
+      transparent
+    );
+  }
+
+  .text-gilded {
+    background: linear-gradient(
+      170deg,
+      var(--color-gold-200) 0%,
+      var(--color-gold-400) 45%,
+      var(--color-gold-600) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-gold-500) 30%, transparent);
+    border-radius: 999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--color-gold-400) 55%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer utilities {
+  /* Varredura vertical usada no esqueleto do QR enquanto o codigo e gerado. */
+  @keyframes shimmer {
+    0% {
+      transform: translateY(-100%);
+    }
+    100% {
+      transform: translateY(100%);
+    }
+  }
+}
