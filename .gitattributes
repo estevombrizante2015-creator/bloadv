@@ -1,0 +1,7 @@
+# O builder do Railway le estes arquivos em Linux: CRLF vindo do Windows faria
+# a versao do Node virar "22\r" e o build morrer sem explicacao.
+* text=auto eol=lf
+*.node-version text eol=lf
+.node-version text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
