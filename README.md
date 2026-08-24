@@ -398,6 +398,11 @@ arquivos em disco; sem volume, todo deploy derruba o pareamento e o escritório
 precisa ler o QR de novo em cada número. É também o motivo de uma réplica só:
 duas instâncias com a mesma sessão Signal derrubam a conta.
 
+**O `backend/.env` não sobe.** Ele é gitignorado — corretamente, porque guarda a
+chave da OpenAI e o segredo do JWT. Nada dali chega ao Railway: cada variável
+precisa ser recriada em *Variables*, no serviço, inclusive a `MONGO_URI` que já
+funciona na sua máquina.
+
 Variáveis (as demais em [backend/.env.example](backend/.env.example)):
 
 ```
