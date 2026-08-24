@@ -48,6 +48,15 @@ async function start() {
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
+  // Sai no boot de proposito: CORS mal configurado nao produz erro em lugar
+  // nenhum - o servidor responde 200, o navegador descarta a resposta e o
+  // painel so consegue dizer "nao foi possivel falar com o servidor". Ter as
+  // origens efetivas no log e a diferenca entre ler a causa e adivinhar.
+  logger.info(
+    { origens: env.corsOrigin, redeLocalLiberada: env.corsAllowLocalNetwork },
+    'CORS configurado'
+  );
+
   await connectDB();
 
   // A ordem importa: o hook precisa existir antes das rotas que ele protege.
