@@ -213,21 +213,34 @@ async function handleBatch({ channel, agent, jid, parts, pushName, batchId = new
   const instructions = [tier.persona, '', `[ESCRITORIO]\n${renderIdentidade()}`];
   if (contextBlock) instructions.push('', contextBlock);
 
-  // Primeiro contato: o modelo nao se apresenta sozinho. A persona diz de onde
-  // ele fala, mas nunca manda dizer isso em voz alta - e as regras de tom
-  // ("frases curtas", "se der para dizer em 8 palavras, nao use 20") empurram
-  // para o minimo. Um "Boa noite" seco virava "Como posso te ajudar hoje?",
-  // sem a pessoa saber sequer de quem e o numero que respondeu.
+  // Primeiro contato. A primeira versao disto mandava "diga quem voce e e de
+  // onde fala" - uma ordem de recitacao, que produzia cartao de visita:
+  // "Aqui e da Barbosa, Loli e Oliveira, atuamos em Direito do Trabalho. Como
+  // posso te ajudar?". Razao social + area + pergunta em sequencia e o padrao
+  // que mais soa gravado.
+  //
+  // O que se pede agora e o efeito, nao a formula: acolher e CONVIDAR o relato.
+  // Quem chega esta inseguro sobre o que pode contar, e e isso que trava a
+  // triagem - nao a falta de identificacao.
   //
   // messageCount ja foi somado ao lote acima, entao igualdade com parts.length
-  // significa que nada mais existe nesta conversa: e a abertura de verdade.
+  // significa que nao existe mais nada nesta conversa: e a abertura de verdade.
   if (contact.messageCount === parts.length) {
     instructions.push(
       '',
-      '[ABERTURA] Esta e a primeira mensagem desta pessoa. Antes de qualquer pergunta, ' +
-        `diga em UMA linha quem voce e e de onde fala: ${FIRM.nomeCurto}, ${FIRM.area}. ` +
-        'No seu tom de sempre - nao recite a razao social inteira, nao liste servicos e ' +
-        'nao se descreva como assistente virtual. Depois disso conduza a conversa normalmente.'
+      '[ABERTURA] Primeira mensagem desta pessoa. Ela costuma chegar insegura sobre ' +
+        'o que pode contar, e e isso que trava a conversa.',
+      '',
+      'Acolha e deixe claro, com naturalidade, que ela pode falar do que esta ' +
+        'acontecendo no trabalho dela. O convite e a parte obrigatoria.',
+      '',
+      `O escritorio (${FIRM.nomeCurto}) so entra se couber leve na frase. Na duvida, ` +
+        'deixe de fora: ela veio ate este numero, provavelmente ja sabe. NUNCA ' +
+        'encadeie nome do escritorio + area de atuacao + pergunta - essa sequencia ' +
+        'e a que mais soa gravada.',
+      '',
+      'Varie a abertura entre conversas. Nao existe frase padrao, e nao repita ' +
+        'nenhum exemplo ao pe da letra.'
     );
   }
 
