@@ -391,6 +391,7 @@ apontando para uma pasta.
 | **Root Directory** | `backend` |
 | Build / Start | vêm de [backend/railway.json](backend/railway.json) |
 | Healthcheck | `/health` |
+| Porta do domínio | `3001` — não o `3000` que o Railway chuta |
 | Replicas | **1** — ver volume abaixo |
 
 **Volume obrigatório**, montado em `/app/sessions`. As credenciais do Baileys são
@@ -413,6 +414,11 @@ JWT_SECRET=...                     # node -e "console.log(require('crypto').rand
 CORS_ORIGIN=https://SEU-FRONTEND.up.railway.app
 ```
 
+A `MONGO_URI` do Atlas exige `0.0.0.0/0` em *Network Access*: o IP de saída do
+Railway não é fixo, não há endereço para liberar. A senha passa a ser a única
+defesa do cluster — longa, aleatória, exclusiva, e URL-encoded se tiver
+caractere especial.
+
 `PORT` o Railway injeta sozinho. `CORS_ORIGIN` é a origem exata do painel, com
 `https://` e sem barra final: em produção a liberação de rede local está
 desligada, então errar aqui vira `Failed to fetch` no navegador.
@@ -429,6 +435,12 @@ npm run create:user -- voce@escritorio.com "sua-senha-forte" --admin
 |---|---|
 | **Root Directory** | `frontend` |
 | Build / Start | vêm de [frontend/railway.json](frontend/railway.json) |
+| Porta do domínio | `3000` |
+
+O start é `next start -H ::`, não `npm start`. A rede privada do Railway é
+IPv6-only e o `next start` sozinho escuta apenas em `0.0.0.0`: o proxy não acha
+o socket e devolve 502 com o serviço marcado como online. É o mesmo motivo do
+`host: '::'` no backend.
 
 ```
 NEXT_PUBLIC_API_URL=https://SEU-BACKEND.up.railway.app
