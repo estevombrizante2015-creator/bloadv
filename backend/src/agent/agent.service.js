@@ -9,7 +9,7 @@ const knowledgeRepository = require('../domain/knowledge.repository');
 const knowledgeService = require('../domain/knowledge.service');
 const websearch = require('./websearch.service');
 const normalizer = require('../whatsapp/message.normalizer');
-const { renderIdentidade } = require('../domain/firm.config');
+const { FIRM, renderIdentidade } = require('../domain/firm.config');
 const inputGuard = require('../guardrails/input.guard');
 const outputGuard = require('../guardrails/output.guard');
 const logger = require('../utils/logger');
@@ -212,6 +212,24 @@ async function handleBatch({ channel, agent, jid, parts, pushName, batchId = new
 
   const instructions = [tier.persona, '', `[ESCRITORIO]\n${renderIdentidade()}`];
   if (contextBlock) instructions.push('', contextBlock);
+
+  // Primeiro contato: o modelo nao se apresenta sozinho. A persona diz de onde
+  // ele fala, mas nunca manda dizer isso em voz alta - e as regras de tom
+  // ("frases curtas", "se der para dizer em 8 palavras, nao use 20") empurram
+  // para o minimo. Um "Boa noite" seco virava "Como posso te ajudar hoje?",
+  // sem a pessoa saber sequer de quem e o numero que respondeu.
+  //
+  // messageCount ja foi somado ao lote acima, entao igualdade com parts.length
+  // significa que nada mais existe nesta conversa: e a abertura de verdade.
+  if (contact.messageCount === parts.length) {
+    instructions.push(
+      '',
+      '[ABERTURA] Esta e a primeira mensagem desta pessoa. Antes de qualquer pergunta, ' +
+        `diga em UMA linha quem voce e e de onde fala: ${FIRM.nomeCurto}, ${FIRM.area}. ` +
+        'No seu tom de sempre - nao recite a razao social inteira, nao liste servicos e ' +
+        'nao se descreva como assistente virtual. Depois disso conduza a conversa normalmente.'
+    );
+  }
 
   if (knowledge.block) {
     instructions.push(
