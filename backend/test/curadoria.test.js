@@ -627,3 +627,29 @@ test('a FAQ nao vai inteira em toda mensagem', () => {
   assert.ok(comRelacao.includes('Resposta 3'), 'a que casa entra');
   assert.ok(!comRelacao.includes('Resposta 7'), 'as que nao casam ficam de fora');
 });
+
+test('o prompt diz que horas sao, e qual saudacao usar', () => {
+  // O modelo nao tem relogio: respondeu "Boa tarde" a um "Boa noite!" das 18h21.
+  const bh = require('../src/conversation/business-hours');
+  const config = schema.sanitizar({}, 'lead_capture');
+
+  const noite = buildInstructions({
+    config,
+    primeiroContato: true,
+    agora: bh.agoraPorExtenso(new Date('2026-08-25T21:21:00Z')),
+  }).join('\n\n');
+
+  assert.ok(noite.includes('[AGORA]'));
+  assert.ok(noite.includes('"Boa noite"'), 'as 18h21 a saudacao e boa noite');
+  assert.ok(noite.includes('18:21'));
+  assert.ok(noite.includes('25 de agosto de 2026'), 'a data ancora "hoje" e "ontem"');
+
+  const manha = buildInstructions({
+    config,
+    agora: bh.agoraPorExtenso(new Date('2026-08-25T11:00:00Z')),
+  }).join('\n\n');
+  assert.ok(manha.includes('"Bom dia"'));
+
+  // Sem o relogio injetado o bloco continua existindo, com a hora de verdade.
+  assert.ok(buildInstructions({ config }).join('\n\n').includes('[AGORA]'));
+});

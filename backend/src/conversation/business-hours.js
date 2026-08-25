@@ -141,12 +141,62 @@ function mensagemAusencia(estado, texto) {
 const descricao = () =>
   `${env.expediente.dias.join(', ')} · ${env.expediente.inicio}–${env.expediente.fim} (Brasilia)`;
 
+/**
+ * PERIODO DO DIA E SAUDACAO
+ * -------------------------
+ * O modelo nao tem relogio. Sem isto ele escolhe a saudacao pelo que "parece"
+ * e erra na cara do contato: "Boa noite!" as 18h21 respondido com "Boa tarde".
+ * Nada denuncia mais depressa que se esta falando com uma maquina — e o erro
+ * acontece justamente na primeira frase da conversa.
+ *
+ * O corte da noite e as 18h, pelo uso brasileiro, e nao pelo fim do expediente
+ * (18h30): quem escreve as 18h05 ja diz "boa noite".
+ */
+function periodoDoDia(referencia = new Date()) {
+  const { minutoDoDia } = agoraEmBrasilia(referencia);
+  if (minutoDoDia < 12 * 60) return 'manha';
+  if (minutoDoDia < 18 * 60) return 'tarde';
+  return 'noite';
+}
+
+const SAUDACAO = { manha: 'Bom dia', tarde: 'Boa tarde', noite: 'Boa noite' };
+
+/**
+ * Data e hora por extenso, para o prompt.
+ * @returns {{ texto: string, periodo: string, saudacao: string, hora: string }}
+ */
+function agoraPorExtenso(referencia = new Date()) {
+  const partes = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: FUSO,
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).formatToParts(referencia);
+
+  const get = (tipo) => partes.find((p) => p.type === tipo)?.value ?? '';
+  const { hora } = agoraEmBrasilia(referencia);
+  const periodo = periodoDoDia(referencia);
+
+  return {
+    texto:
+      `${get('weekday')}, ${get('day')} de ${get('month')} de ${get('year')}, ${hora} ` +
+      '(horario de Brasilia)',
+    periodo,
+    saudacao: SAUDACAO[periodo],
+    hora,
+  };
+}
+
 module.exports = {
   estaNoExpediente,
   mensagemAusencia,
   agoraEmBrasilia,
+  agoraPorExtenso,
+  periodoDoDia,
   descricao,
   minutos,
+  SAUDACAO,
   FUSO,
   DIAS,
 };

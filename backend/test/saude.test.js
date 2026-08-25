@@ -24,6 +24,7 @@ const cenario = (over = {}) => ({
   corrida: { execucoes: 12, falhas: 0, latenciaMediaMs: 3200, ...(over.corrida || {}) },
   pausadas: over.pausadas ?? 0,
   calados: over.calados ?? {},
+  descartes: over.descartes ?? {},
   bloqueios: over.bloqueios ?? 0,
   erro: over.erro ?? null,
 });
@@ -174,4 +175,24 @@ test('contato em handoff sem ninguem respondendo e critico', () => {
     cenario({ calados: { handoff_humano_ativo: 4 }, volume: { enviadasPorPessoa24h: 6 } })
   );
   assert.ok(!comAtendimento.some((s) => /sem resposta de ninguem/i.test(s.titulo)));
+});
+
+test('o painel diz por que cada mensagem ficou sem resposta', () => {
+  // "mandei mensagem e ninguem respondeu" so tinha resposta no log do servidor.
+  const misto = saude.diagnosticar(
+    cenario({ descartes: { fora_expediente: 2, atendimento_humano: 4, loop_de_bot: 1 } })
+  );
+  const achado = misto.find((s) => /sem resposta do agente/i.test(s.titulo));
+
+  assert.equal(achado?.nivel, 'atencao');
+  assert.match(achado.titulo, /^7 /, 'soma os motivos');
+  assert.match(achado.detalhe, /atendimento humano: 4/);
+  assert.match(achado.detalhe, /fora do expediente: 2/);
+  assert.ok(!/loop_de_bot/.test(achado.detalhe), 'nome tecnico nao vai para a tela');
+
+  // So fora do expediente e operacao normal: informa, mas nao alarma.
+  const expediente = saude.diagnosticar(cenario({ descartes: { fora_expediente: 5 } }));
+  const noturno = expediente.find((s) => /sem resposta do agente/i.test(s.titulo));
+  assert.equal(noturno?.nivel, 'saudavel');
+  assert.match(noturno.detalhe, /UMA vez por periodo/, 'explica o silencio das seguintes');
 });

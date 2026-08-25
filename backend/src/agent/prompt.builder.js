@@ -1,6 +1,7 @@
 const { FIRM, renderIdentidade } = require('../domain/firm.config');
 const { LIMITES_ADVOCACIA } = require('./models.registry');
 const { TONS, CAMPOS_EMPRESA } = require('../curadoria/config.schema');
+const businessHours = require('../conversation/business-hours');
 
 /**
  * MONTAGEM DO PROMPT
@@ -294,6 +295,9 @@ function buildInstructions({
   injection = false,
   escalonado = false,
   situacaoDoCliente = null,
+  // Injetavel para o teste conseguir fixar o relogio; em producao vem do fuso
+  // de Brasilia, nao do fuso do servidor (que na nuvem costuma ser UTC).
+  agora = null,
   textoDoContato = '',
 }) {
   const partes = [];
@@ -332,6 +336,28 @@ function buildInstructions({
   );
 
   // -------- 5 e 6: escritorio e contexto curado --------
+  /**
+   * O modelo nao tem relogio nem calendario. Sem este bloco ele escolhe a
+   * saudacao pelo que parece — e respondeu "Boa tarde" a um "Boa noite!" das
+   * 18h21. Na primeira frase da conversa, esse erro entrega a maquina.
+   *
+   * Serve tambem para ancorar "hoje", "ontem", "semana passada" e "ha dois
+   * meses", que aparecem em todo relato trabalhista e viram data errada no
+   * registro do caso quando o modelo tem de adivinhar de onde contar.
+   */
+  const momento = agora || businessHours.agoraPorExtenso();
+  partes.push(
+    bloco(
+      'AGORA',
+      `${momento.texto}.\n` +
+        `A saudacao correta neste momento e "${momento.saudacao}". Nao use outra: saudacao trocada ` +
+        'e o erro que mais denuncia atendimento automatico. Se a pessoa cumprimentar primeiro, ' +
+        'espelhe a saudacao dela.\n' +
+        'Use esta data para entender "hoje", "ontem", "semana passada" ou "ha dois meses". Nunca ' +
+        'chute data.'
+    )
+  );
+
   partes.push(bloco('ESCRITORIO', renderIdentidade()));
 
   const empresa = blocoEmpresa(config.empresa, textoDoContato);

@@ -1,4 +1,11 @@
-const { Channel, Message, AgentRun, Conversation, GuardrailEvent } = require('../models');
+const {
+  Channel,
+  Message,
+  AgentRun,
+  Conversation,
+  GuardrailEvent,
+  ProcessedMessage,
+} = require('../models');
 const { PAUSED_STATUSES } = require('../conversation/conversation.service');
 const { CANAL_TESTE } = require('../curadoria/sandbox.service');
 const curadoria = require('../curadoria/config.service');
@@ -45,6 +52,25 @@ const NIVEL_LABEL = {
  */
 const LATENCIA_ALTA_MS = 15_000;
 
+/**
+ * Motivos de descarte gravados pelo bridge em ProcessedMessage. O nome tecnico
+ * nao serve para quem opera: "fora_expediente:fim_do_dia" nao explica por que a
+ * pessoa nao recebeu resposta nenhuma.
+ */
+const MOTIVO_LEGIVEL = {
+  fora_expediente: 'fora do expediente',
+  atendimento_humano: 'contato em atendimento humano',
+  agente_desligado_no_canal: 'agente desligado neste numero',
+  agente_em_standby: 'agente em standby',
+  loop_de_bot: 'suspeita de robo do outro lado',
+  sem_conteudo: 'mensagem sem conteudo legivel',
+  orcamento_contato_excedido: 'orcamento de tokens do contato',
+  violacao_guardrail_saida: 'resposta barrada pelo guardrail',
+};
+
+/** "fora_expediente:fim_do_dia" -> "fora_expediente" */
+const motivoBase = (reason) => String(reason || 'desconhecido').split(':')[0];
+
 const sinal = (nivel, titulo, detalhe, comoResolver = null) => ({
   nivel,
   titulo,
@@ -68,7 +94,7 @@ const pior = (sinais) =>
  * nada em 7 dias, o painel diz exatamente isso.
  */
 async function coletar(desde, desdeHistorico) {
-  const [docs, mensagens, execucoes, pausadas, guardrails, limites] = await Promise.all([
+  const [docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas] = await Promise.all([
     Channel.find().lean(),
 
     Message.aggregate([
@@ -138,9 +164,23 @@ async function coletar(desde, desdeHistorico) {
       },
       { $group: { _id: { channelId: '$channelId', rule: '$rule' }, total: { $sum: 1 } } },
     ]),
+
+    /**
+     * Mensagens que chegaram e foram DESCARTADAS antes do agente, com o motivo
+     * exato — fora do expediente, contato em atendimento humano, agente
+     * desligado no canal, standby, loop de bot.
+     *
+     * Este e o registro que responde "por que aquela mensagem nao foi
+     * respondida?" sem depender de ler log de servidor. Cada caminho de
+     * descarte no bridge ja gravava o motivo aqui; ninguem nunca leu.
+     */
+    ProcessedMessage.aggregate([
+      { $match: { createdAt: { $gte: desde }, status: 'ignored' } },
+      { $group: { _id: { channelId: '$channelId', reason: '$reason' }, total: { $sum: 1 } } },
+    ]),
   ]);
 
-  return { docs, mensagens, execucoes, pausadas, guardrails, limites };
+  return { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas };
 }
 
 /** Texto do ultimo erro do agente, buscado so nos canais que de fato falharam. */
@@ -161,7 +201,17 @@ async function ultimoErro(channelId, desde) {
  * agir. Cada sinal responde tres coisas: o que esta acontecendo, por que isso
  * importa e o que fazer. Sinal sem a terceira parte e so barulho.
  */
-function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, calados = {}, erro }) {
+function diagnosticar({
+  estado,
+  doc,
+  volume,
+  corrida,
+  pausadas,
+  bloqueios,
+  calados = {},
+  descartes = {},
+  erro,
+}) {
   const sinais = [];
   const conectado = estado.status === 'connected';
   const temCredenciais = Boolean(estado.hasCredentials);
@@ -348,6 +398,41 @@ function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, calad
     );
   }
 
+  /**
+   * Mensagens que chegaram e o agente nem tentou responder, com o motivo de
+   * cada uma. E a resposta direta para "mandei mensagem e ninguem respondeu" —
+   * a pergunta que ate agora so tinha resposta no log do servidor.
+   *
+   * Um sinal so, com a lista, em vez de um por motivo: a pessoa quer saber
+   * quantas ficaram sem resposta e por que, nao ler cinco alertas parecidos.
+   */
+  const totalDescartes = Object.values(descartes).reduce((a, b) => a + b, 0);
+
+  if (totalDescartes > 0) {
+    const detalhado = Object.entries(descartes)
+      .sort((a, b) => b[1] - a[1])
+      .map(([motivo, total]) => `${MOTIVO_LEGIVEL[motivo] || motivo}: ${total}`)
+      .join('; ');
+
+    const soExpediente = Object.keys(descartes).every((m) => m === 'fora_expediente');
+
+    sinais.push(
+      sinal(
+        soExpediente ? 'saudavel' : 'atencao',
+        `${totalDescartes} mensagem(ns) recebidas sem resposta do agente`,
+        `Motivos: ${detalhado}.` +
+          (descartes.fora_expediente
+            ? ' Fora do expediente o aviso de ausencia sai UMA vez por periodo — as mensagens ' +
+              'seguintes ficam sem resposta nenhuma ate o expediente abrir.'
+            : ''),
+        soExpediente
+          ? null
+          : 'Cada motivo tem uma acao diferente: retomar a conversa, religar o interruptor do ' +
+            'agente, tirar o agente de standby ou ampliar o expediente.'
+      )
+    );
+  }
+
   if (calados.rate_limit > 0) {
     sinais.push(
       sinal(
@@ -422,7 +507,7 @@ async function avaliar(estados) {
   const desde = new Date(agora - JANELA_MS);
   const desdeHistorico = new Date(agora - HISTORICO_MS);
 
-  const { docs, mensagens, execucoes, pausadas, guardrails, limites } = await coletar(
+  const { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas } = await coletar(
     desde,
     desdeHistorico
   );
@@ -438,6 +523,15 @@ async function avaliar(estados) {
     const { channelId, rule } = linha._id;
     porCalado[channelId] = porCalado[channelId] || {};
     porCalado[channelId][rule] = linha.total;
+  }
+
+  /** channelId -> { fora_expediente: n, atendimento_humano: n, ... } */
+  const porDescarte = {};
+  for (const linha of descartadas) {
+    const { channelId, reason } = linha._id;
+    const motivo = motivoBase(reason);
+    porDescarte[channelId] = porDescarte[channelId] || {};
+    porDescarte[channelId][motivo] = (porDescarte[channelId][motivo] || 0) + linha.total;
   }
 
   const porMensagem = {};
@@ -479,6 +573,7 @@ async function avaliar(estados) {
       pausadas: porPausa[estado.id] || 0,
       bloqueios: porBloqueio[estado.id] || 0,
       calados: porCalado[estado.id] || {},
+      descartes: porDescarte[estado.id] || {},
       erro,
     });
 
@@ -525,6 +620,9 @@ async function avaliar(estados) {
       respostasBloqueadas24h: porBloqueio[estado.id] || 0,
       // Mensagens que nem chegaram ao agente, por limite de protecao.
       caladasPorLimite24h: Object.values(porCalado[estado.id] || {}).reduce((a, b) => a + b, 0),
+      // ...e as descartadas antes dele, com o motivo de cada uma. E aqui que se
+      // responde "mandei mensagem e ninguem respondeu" sem abrir log nenhum.
+      semRespostaPorMotivo24h: porDescarte[estado.id] || {},
     });
   }
 

@@ -192,6 +192,9 @@ export interface SaudeCanal {
   };
   conversasPausadas: number;
   respostasBloqueadas24h: number;
+  caladasPorLimite24h?: number;
+  /** motivo -> quantas mensagens ficaram sem resposta por ele nas ultimas 24h */
+  semRespostaPorMotivo24h?: Record<string, number>;
 }
 
 export interface RelatorioSaude {

@@ -105,3 +105,28 @@ test('descricao legivel do expediente', () => {
   assert.match(texto, /18:30/);
   assert.match(texto, /Brasilia/i);
 });
+
+// ------------------------------------------------- saudacao pelo relogio real
+
+test('o periodo do dia segue o uso brasileiro, nao o fim do expediente', () => {
+  const em = (iso) => bh.periodoDoDia(new Date(iso));
+
+  // Horarios em UTC; Brasilia e -03:00.
+  assert.equal(em('2026-08-25T11:00:00Z'), 'manha', '08:00 e manha');
+  assert.equal(em('2026-08-25T14:59:00Z'), 'manha', '11:59 ainda e manha');
+  assert.equal(em('2026-08-25T15:00:00Z'), 'tarde', '12:00 vira tarde');
+  assert.equal(em('2026-08-25T20:59:00Z'), 'tarde', '17:59 ainda e tarde');
+  // Quem escreve as 18h05 diz "boa noite", ainda que o expediente va ate 18h30.
+  assert.equal(em('2026-08-25T21:00:00Z'), 'noite', '18:00 ja e noite');
+  assert.equal(em('2026-08-25T21:21:00Z'), 'noite');
+});
+
+test('a data e a saudacao chegam prontas para o prompt', () => {
+  const agora = bh.agoraPorExtenso(new Date("2026-08-25T21:21:00Z"));
+
+  assert.equal(agora.saudacao, 'Boa noite');
+  assert.equal(agora.hora, '18:21');
+  assert.match(agora.texto, /ter.a-feira/i);
+  assert.match(agora.texto, /25 de agosto de 2026/);
+  assert.match(agora.texto, /Brasilia/);
+});
