@@ -145,7 +145,9 @@ const EXTRACTOR_PROMPT = [
   '- Se a mensagem tem mais de um assunto, escolha o de maior risco para o escritorio',
   '  (honorarios e valor da causa vem antes de duvida generica).',
   '- Preencha os slots que a narrativa sustenta. "fui demitido" ja define tipo_caso e situacao_atual;',
-  '  isso e classificar, nao inventar. Nao preencha nome, empresa, datas ou valores sem mencao explicita.',
+  '  isso e classificar, nao inventar. Empresa, datas e valores so com mencao explicita.',
+  '- "nome": preencha assim que o contato se identificar, mesmo de passagem — "Estevao, eu queria',
+  '  saber...", "aqui e a Maria". E o dado que mais incomoda quando perguntado duas vezes.',
   '- Se um slot ja esta correto no estado atual, omita-o (mande somente o delta).',
   '- Valores devem respeitar os enums do schema.',
   '- "facts": no maximo 3 fatos novos, cada um com ate 100 caracteres.',
@@ -212,12 +214,42 @@ const SOCIAL = [
  * O vies e deliberado: na duvida, EXTRAI. Perder um slot custa uma pergunta
  * repetida ao cliente; economizar tokens nao vale isso.
  */
+/**
+ * O nome que o WhatsApp ja entrega, limpo do enfeite que as pessoas poem nele.
+ *
+ * O perfil do contato e um dado OBSERVADO, nao inventado: quem escreve chega
+ * com "Estevao.'." no cabecalho da conversa. Perguntar o nome de quem esta
+ * identificado na tela desde a primeira mensagem e o que faz o atendimento
+ * parecer uma maquina — foi exatamente a queixa que originou esta funcao.
+ *
+ * Devolve null quando o apelido nao identifica ninguem (so numeros, so
+ * emoji, uma letra solta): ai perguntar e legitimo.
+ */
+function nomeDoPushName(pushName) {
+  const limpo = String(pushName || '')
+    // Fora emoji, pontuacao e enfeite; sobra letra, numero, espaco, apostrofo
+    // e hifen, que sao os unicos sinais que aparecem dentro de um nome.
+    .replace(/[^\p{L}\p{M}\p{N}\s'\-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[-'\s]+/, '')
+    .replace(/[-'\s]+$/, '');
+
+  if (limpo.length < 2 || limpo.length > 60) return null;
+  // Numero de telefone como nome de exibicao nao identifica a pessoa.
+  if ((limpo.match(/\p{L}/gu) || []).length < 2) return null;
+  return limpo;
+}
+
 function valeExtrair(texto) {
   const normalizado = String(texto || '')
     .toLowerCase()
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .replace(/[^a-z0-9\s]/g, ' ')
+    // "bom diaaa" e "oieee" sao a mesma saudacao esticada: sem isto elas
+    // escapam da lista social e pagam uma extracao para nao dizer nada.
+    .replace(/(\p{L})\1{2,}/gu, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -307,6 +339,7 @@ function buildContext({ ontology, role, rollingSummary, recentMessages, allMessa
 
 module.exports = {
   valeExtrair,
+  nomeDoPushName,
   sanitize,
   merge,
   render,

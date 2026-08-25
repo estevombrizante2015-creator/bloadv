@@ -123,8 +123,11 @@ test('o pipeline chama markModified apos fundir a ontologia', async () => {
   const source = fs.readFileSync(require.resolve('../src/agent/agent.service.js'), 'utf8');
 
   const mergeAt = source.indexOf('ontologyService.merge(contact.ontology');
-  const markAt = source.indexOf("contact.markModified('ontology')");
-
   assert.ok(mergeAt > -1, 'o merge da ontologia deveria existir no pipeline');
-  assert.ok(markAt > mergeAt, 'markModified precisa vir depois do merge, antes do save');
+
+  // Ha mais de um `markModified` no pipeline — o nome lido do perfil do
+  // WhatsApp e semeado antes do merge. O que este teste guarda e a existencia
+  // de um DEPOIS do merge; procurar o primeiro do arquivo testaria outra coisa.
+  const markDepoisDoMerge = source.indexOf("contact.markModified('ontology')", mergeAt);
+  assert.ok(markDepoisDoMerge > -1, 'markModified precisa vir depois do merge, antes do save');
 });

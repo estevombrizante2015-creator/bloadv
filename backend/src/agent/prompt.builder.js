@@ -224,6 +224,7 @@ function blocosMidia(config, tipos = []) {
  * @param {boolean} args.primeiroContato primeira mensagem desta pessoa
  * @param {string}  [args.contextBlock]  estado estruturado da ontologia
  * @param {string[]} [args.missing]      slots que faltam descobrir
+ * @param {string}  [args.nomeConhecido] nome ja sabido (perfil do WhatsApp ou dito pelo contato)
  * @param {string}  [args.sugestaoPergunta]
  * @param {object}  [args.knowledge]     { block }
  * @param {object}  [args.web]           { ok, texto }
@@ -240,6 +241,7 @@ function buildInstructions({
   contextBlock = null,
   missing = [],
   sugestaoPergunta = null,
+  nomeConhecido = null,
   knowledge = null,
   web = null,
   unidadesBlock = null,
@@ -372,13 +374,29 @@ function buildInstructions({
     );
   }
 
+  // O nome pode vir do perfil do WhatsApp ou da boca do contato; para esta
+  // instrucao da no mesmo — ja e sabido, entao perguntar de novo e o defeito.
+  if (nomeConhecido) {
+    partes.push(
+      bloco(
+        'NOME',
+        `O contato ja esta identificado: "${nomeConhecido}". Chame-o assim e NUNCA pergunte como ele ` +
+          'se chama. Se o encaminhamento exigir o nome completo, confirme UMA vez, no momento do ' +
+          `encaminhamento: "${nomeConhecido}, me confirma seu nome completo?" — nunca no meio do relato.`
+      )
+    );
+  }
+
+  // Uma pergunta por vez, por construcao: o modelo recebe UM slot, nao a
+  // lista. Pedir "no maximo um" e confiar; entregar so um e garantir.
   if (missing.length) {
+    const alvo = missing[0];
     partes.push(
       bloco(
         'FOCO',
-        `Ainda falta descobrir: ${missing.join(', ')}. Pergunte no maximo UM destes agora. ` +
-          'Se a mensagem que acabou de chegar ja responde algum deles, NAO pergunte de novo: ' +
-          'o estado acima e do turno anterior e ainda nao inclui esta mensagem.' +
+        `O proximo dado a descobrir e: ${alvo}. Faca UMA pergunta, sobre ${alvo} e mais nada — ` +
+          'o resto vem nos proximos turnos. Se a mensagem que acabou de chegar ja responde isso, ' +
+          'NAO pergunte de novo: o estado acima e do turno anterior e ainda nao inclui esta mensagem.' +
           (sugestaoPergunta ? ` Se couber, uma boa forma de perguntar e: "${sugestaoPergunta}"` : '')
       )
     );

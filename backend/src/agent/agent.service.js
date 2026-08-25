@@ -111,6 +111,17 @@ async function handleBatch({ channel, agent, jid, parts, pushName, phoneNumber, 
 
   const contact = await getOrCreateContact({ channelId, jid, role, pushName });
 
+  // O nome vem de graca no perfil do WhatsApp. Sem isto ele fica em `faltam`,
+  // vira "Ainda falta descobrir: nome" no prompt, e o agente pergunta o nome
+  // de alguem que esta identificado na tela desde a primeira mensagem — as
+  // vezes duas vezes na mesma conversa.
+  const nomeDoPerfil = ontologyService.nomeDoPushName(contact.pushName || pushName);
+  if (nomeDoPerfil && !contact.ontology?.slots?.nome) {
+    contact.ontology = contact.ontology || { version: 1, slots: {}, facts: [] };
+    contact.ontology.slots = { ...(contact.ontology.slots || {}), nome: nomeDoPerfil };
+    contact.markModified('ontology');
+  }
+
   logger.info(
     {
       ev: EV.AGENT_EXECUTION_STARTED,
@@ -260,6 +271,9 @@ async function handleBatch({ channel, agent, jid, parts, pushName, phoneNumber, 
     escalonado: decision.tier === 'terra' && agent.tier !== 'terra',
     situacaoDoCliente,
     textoDoContato: safeText,
+    // Confirmar o nome completo no encaminhamento e legitimo; perguntar
+    // "qual seu nome?" a quem ja esta identificado nao e.
+    nomeConhecido: contact.ontology?.slots?.nome || null,
   });
 
   const chatMessages = turns.map((m) => ({
