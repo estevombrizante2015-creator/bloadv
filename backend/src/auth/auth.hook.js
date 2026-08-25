@@ -47,7 +47,15 @@ function registerAuthHook(fastify) {
       return reply.code(401).send({ error: 'Sessao invalida' });
     }
 
-    request.user = { id: user._id.toString(), email: user.email, role: user.role };
+    // `nome` entra aqui porque o historico da curadoria registra quem publicou:
+    // "Dra. Fulana" e mais util que o email para quem for procurar depois por
+    // que o atendimento mudou.
+    request.user = {
+      id: user._id.toString(),
+      email: user.email,
+      nome: user.name || null,
+      role: user.role,
+    };
   });
 
   logger.info({ publicas: [...PUBLIC_PATHS] }, 'Autenticacao do painel ativa');

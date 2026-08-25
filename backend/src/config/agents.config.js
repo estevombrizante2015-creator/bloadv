@@ -97,14 +97,19 @@ function numberVariants(value) {
 
 /**
  * O WhatsApp passou a usar LID (`1234@lid`) no lugar do telefone em muitos
- * chats, por privacidade. O numero por tras dele NAO e exposto pelo protocolo,
- * entao tratar um LID como telefone produz coisas como "+40351318433948".
+ * chats, por privacidade. O LID e um identificador opaco: trata-lo como
+ * telefone produz coisas como "+40351318433948".
+ *
+ * O telefone real NAO esta no LID, mas vem por fora — no proprio stanza da
+ * mensagem (`key.senderPn`) e em dois eventos do protocolo. Quem faz essa
+ * traducao e whatsapp/lid.resolver.js; aqui embaixo a regra continua sendo a
+ * mesma: do JID sozinho nao se extrai numero nenhum.
  */
 const isLidJid = (jid) => String(jid || '').endsWith('@lid');
 
 /**
  * Extrai o numero de um JID ("5519996383884@s.whatsapp.net" -> "5519996383884").
- * Devolve null para LID: e um identificador interno, nao um telefone.
+ * Devolve null para LID: o telefone nao esta ali. Use lid.resolver.
  */
 function jidToNumber(jid) {
   if (isLidJid(jid)) return null;
@@ -113,6 +118,22 @@ function jidToNumber(jid) {
 
 /** Identificador cru, para quando so existe o LID. */
 const jidToIdentifier = (jid) => String(jid || '').split('@')[0].split(':')[0] || null;
+
+/**
+ * Garante o DDI brasileiro num numero digitado a mao.
+ *
+ * Quem copia do WhatsApp digita "(19) 99638-3884", sem o +55. Testar apenas
+ * `startsWith('55')` corromperia os numeros do DDD 55 (Santa Maria/RS):
+ * "55 99999-9999" viraria um numero com DDI e sem DDD. O comprimento e o que
+ * desempata — com DDI, um celular tem 13 digitos e um fixo, 12.
+ */
+function comDdiBrasil(valor) {
+  const digitos = digitsOnly(valor);
+  if (!digitos) return null;
+  if (digitos.length >= 12 && digitos.startsWith('55')) return digitos;
+  if (digitos.length === 10 || digitos.length === 11) return `55${digitos}`;
+  return digitos;
+}
 
 /** Formato legivel para o painel: +55 (19) 99638-3884 */
 function formatNumber(value) {
@@ -182,4 +203,5 @@ module.exports = {
   jidToIdentifier,
   isLidJid,
   formatNumber,
+  comDdiBrasil,
 };

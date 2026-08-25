@@ -157,6 +157,84 @@ const EXTRACTOR_PROMPT = [
  * Executa a extracao no tier mini (barato) e devolve o delta sanitizado.
  * Recebe openaiService por parametro para evitar dependencia circular.
  */
+/**
+ * Frases sociais que nao carregam informacao de caso.
+ *
+ * Escritas sem acento e comparadas contra o texto normalizado, porque quem
+ * digita no celular escreve "ola" tanto quanto "olá" — e um `/olá/` cru
+ * perderia metade das saudacoes.
+ */
+const SOCIAL = [
+  'bom dia',
+  'boa tarde',
+  'boa noite',
+  'ola',
+  'oi',
+  'oie',
+  'opa',
+  'e ai',
+  'tudo bem',
+  'tudo bom',
+  'como vai',
+  'obrigado',
+  'obrigada',
+  'obrigado(a)',
+  'agradeco',
+  'valeu',
+  'blz',
+  'beleza',
+  'ok',
+  'okay',
+  'certo',
+  'entendi',
+  'perfeito',
+  'por favor',
+  'pfv',
+  'boa',
+  'com licenca',
+  'ate mais',
+  'tchau',
+  'bom fim de semana',
+];
+
+/**
+ * Vale gastar uma chamada de modelo para extrair estado desta mensagem?
+ *
+ * A extracao custa cerca de 900 tokens por turno — mais de um terco do custo de
+ * uma resposta. Rodar isso sobre "Bom dia!!" paga o preco cheio para descobrir,
+ * com certeza, que nao ha nada a extrair.
+ *
+ * O teste e por SUBTRACAO, nao por lista de gatilhos: retira-se do texto tudo o
+ * que e cumprimento e pontuacao; se sobrar alguma palavra, ela pode ser o caso
+ * da pessoa e a extracao roda. "Bom dia, fui demitido" deixa "fui demitido" e
+ * portanto extrai; "Bom dia!!" nao deixa nada.
+ *
+ * O vies e deliberado: na duvida, EXTRAI. Perder um slot custa uma pergunta
+ * repetida ao cliente; economizar tokens nao vale isso.
+ */
+function valeExtrair(texto) {
+  const normalizado = String(texto || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalizado) return false;
+
+  // Mensagem longa quase nunca e so cumprimento; nem vale normalizar mais.
+  if (normalizado.length > 80) return true;
+
+  let resto = ` ${normalizado} `;
+  // Do mais longo para o mais curto: "tudo bem" antes de "bem" solto.
+  for (const frase of [...SOCIAL].sort((a, b) => b.length - a.length)) {
+    resto = resto.split(` ${frase} `).join(' ');
+  }
+
+  return resto.trim().length > 0;
+}
+
 async function extract({ openaiService, role, currentOntology, recentMessages, userText }) {
   const schema = extractionSchema(role);
   const currentCompact = render(currentOntology, role) || '(vazio)';
@@ -228,6 +306,7 @@ function buildContext({ ontology, role, rollingSummary, recentMessages, allMessa
 }
 
 module.exports = {
+  valeExtrair,
   sanitize,
   merge,
   render,

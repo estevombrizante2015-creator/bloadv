@@ -37,6 +37,19 @@
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+
+    /*
+     * Alguns controles sao desenhados pelo NAVEGADOR, nao pela pagina: o
+     * calendario de `input[type=date]`, a barra de rolagem, o seletor de hora.
+     * Nenhuma regra de cor os alcanca — o calendario abria branco no meio do
+     * painel escuro.
+     *
+     * `color-scheme` e a unica chave que o navegador aceita para isso, e ela
+     * resolve os tres de uma vez, inclusive o icone do calendario dentro do
+     * campo. A lista de `<select>` NAO se resolve assim (e do sistema
+     * operacional, nao do navegador) — por isso existe o componente Seletor.
+     */
+    color-scheme: dark;
   }
 
   body {

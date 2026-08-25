@@ -10,6 +10,16 @@ const { listTiers } = require('../agent/models.registry');
 const inputGuard = require('../guardrails/input.guard');
 const { env } = require('../config/env');
 const businessHours = require('../conversation/business-hours');
+const { CANAL_TESTE } = require('../curadoria/sandbox.service');
+const curadoria = require('../curadoria/config.service');
+
+/**
+ * Ativo/standby vem da curadoria, nao do arquivo de cadastro: o painel pode ter
+ * mudado o status sem deploy. Servir o valor do arquivo faria a tela de
+ * Conexoes dizer "ativo" sobre um agente que parou de responder.
+ */
+const comStatusEfetivo = () =>
+  listAgents().map((a) => ({ ...a, status: curadoria.statusEfetivo(a.id) }));
 
 async function channelsRoutes(fastify) {
   /** Os 3 canais com estado ao vivo. */
@@ -24,7 +34,7 @@ async function channelsRoutes(fastify) {
         agent: state.agentId ? getAgent(state.agentId) && {
           id: state.agentId,
           label: state.agentLabel,
-          status: state.agentStatus,
+          status: curadoria.statusEfetivo(state.agentId),
           matchedByNumber: state.agentMatchedByNumber,
         } : null,
         stats: byId[state.id]?.stats || { messagesIn: 0, messagesOut: 0, tokensUsed: 0 },
@@ -101,7 +111,11 @@ async function channelsRoutes(fastify) {
         { $sort: { tokens: -1 } },
       ]),
       GuardrailEvent.aggregate([
-        { $match: { createdAt: { $gte: since } } },
+        // O canal ficticio da curadoria fica de fora: uma conversa de teste
+        // que dispara guardrail e o sistema funcionando, nao uma violacao do
+        // atendimento. Contar as duas juntas faria a metrica piorar
+        // exatamente quando a equipe testa mais antes de publicar.
+        { $match: { createdAt: { $gte: since }, channelId: { $ne: CANAL_TESTE } } },
         { $group: { _id: { stage: '$stage', rule: '$rule' }, count: { $sum: 1 } } },
         { $sort: { count: -1 } },
         { $limit: 20 },
@@ -135,7 +149,7 @@ async function channelsRoutes(fastify) {
 
   /** Registro de agentes e quais numeros cada um atende (config + painel). */
   fastify.get('/api/agents', async () => ({
-    agents: listAgents(),
+    agents: comStatusEfetivo(),
     numbers: registeredNumbers(),
     assignments: await agentResolver.list(),
   }));
@@ -227,7 +241,7 @@ async function channelsRoutes(fastify) {
 
   fastify.get('/api/config', async () => ({
     channels: CHANNELS.map(({ id, role, label, agentTier }) => ({ id, role, label, agentTier })),
-    agents: listAgents(),
+    agents: comStatusEfetivo(),
     tiers: listTiers(),
     buffer: {
       windowMs: env.buffer.windowMs,

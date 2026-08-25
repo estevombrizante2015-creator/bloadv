@@ -5,6 +5,14 @@
  *   npm run create:user -- email@escritorio.com "senha-forte"
  *   npm run create:user -- email@escritorio.com "senha-forte" --nome "Dra. Fulana" --admin
  *
+ * Niveis de acesso (padrao: curador):
+ *   --admin          altera, publica, restaura versoes e gerencia acessos
+ *   (sem flag)       curador: edita, testa e publica a configuracao dos agentes
+ *   --visualizador   so consulta configuracao, historico e metricas
+ *
+ * Depois do primeiro administrador, o resto da equipe pode ser cadastrado pela
+ * propria interface, em Curadoria > Acessos.
+ *
  * Rodar sem argumentos lista os usuarios existentes.
  */
 const mongoose = require('mongoose');
@@ -42,11 +50,20 @@ async function main() {
     process.exit(1);
   }
 
+  // Sem flag, a conta nasce curador: edita, testa e publica a configuracao dos
+  // agentes, mas nao restaura versao nem mexe em outros acessos. Ver
+  // src/auth/roles.js.
+  const papel = args.includes('--admin')
+    ? 'admin'
+    : args.includes('--visualizador')
+      ? 'visualizador'
+      : 'curador';
+
   const user = await authService.createUser({
     email,
     password,
     name: nomeIdx > -1 ? args[nomeIdx + 1] : undefined,
-    role: args.includes('--admin') ? 'admin' : 'operador',
+    role: papel,
   });
 
   console.log(`\n  Usuario pronto: ${user.email} (${user.role})`);

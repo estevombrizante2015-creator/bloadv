@@ -10,6 +10,8 @@ import {
   RefreshCw,
   MessagesSquare,
   ShieldCheck,
+  SlidersHorizontal,
+  Users,
   TriangleAlert,
   X,
   Wifi,
@@ -132,6 +134,22 @@ export default function ConnectionsPage() {
             >
               <MessagesSquare size={14} />
               Conversas
+            </Link>
+
+            <Link
+              href="/clientes"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-navy-800 px-3 py-1.5 text-xs text-muted transition-colors hover:border-gold-500/40 hover:text-gold-300"
+            >
+              <Users size={14} />
+              Clientes
+            </Link>
+
+            <Link
+              href="/curadoria"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-navy-800 px-3 py-1.5 text-xs text-muted transition-colors hover:border-gold-500/40 hover:text-gold-300"
+            >
+              <SlidersHorizontal size={14} />
+              Curadoria
             </Link>
 
             <button

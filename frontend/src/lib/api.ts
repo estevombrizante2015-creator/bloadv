@@ -84,7 +84,7 @@ export class UnauthorizedError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     cache: 'no-store',
     ...init,
@@ -269,5 +269,15 @@ export const conversationsApi = {
     request<ConversationSummary>(
       `/api/conversations/${channelId}/${encodeURIComponent(chatId)}/pause`,
       { method: 'POST', body: JSON.stringify({ reason: 'pausada_no_painel' }) }
+    ),
+
+  /**
+   * Informa o telefone de um chat que o WhatsApp enderecou por LID e sobre o
+   * qual nunca revelou o numero. Vale para o contato, nao so para esta conversa.
+   */
+  definirNumero: (channelId: string, chatId: string, telefone: string) =>
+    request<{ conversa: ConversationSummary }>(
+      `/api/conversations/${channelId}/${encodeURIComponent(chatId)}/numero`,
+      { method: 'POST', body: JSON.stringify({ telefone }) }
     ),
 };

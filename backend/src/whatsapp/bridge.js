@@ -7,7 +7,8 @@ const businessHours = require('../conversation/business-hours');
 const agentService = require('../agent/agent.service');
 const { getChannel } = require('../config/channels');
 const { env } = require('../config/env');
-const { isAgentActive } = require('../config/agents.config');
+const curadoria = require('../curadoria/config.service');
+const clienteService = require('../clientes/cliente.service');
 const { Channel, Conversation, ProcessedMessage } = require('../models');
 const logger = require('../utils/logger');
 const { EV } = require('../utils/events');
@@ -64,7 +65,7 @@ function registerBridge(io) {
   // ------------------------------------------------ entrada de mensagens
 
   manager.onMessage = async (payload) => {
-    const { channelId, jid, msg, pushName, waMessageId, verifiedBizName } = payload;
+    const { channelId, jid, msg, pushName, waMessageId, verifiedBizName, phoneNumber } = payload;
     const channel = getChannel(channelId);
     if (!channel) return;
 
@@ -72,13 +73,23 @@ function registerBridge(io) {
     const agent = manager.agentFor(channelId);
     if (!agent) return;
 
-    if (!isAgentActive(agent)) {
+    // Ativo/standby vem da curadoria: e uma decisao operacional, e a equipe
+    // precisa poder tomar sem deploy. O agents.config segue como cadastro base.
+    if (!curadoria.estaAtivo(agent.id)) {
       logger.info(
-        { ev: EV.AGENT_STANDBY_SKIPPED, channelId, chatId: jid, agentId: agent.id, status: agent.status },
+        {
+          ev: EV.AGENT_STANDBY_SKIPPED,
+          channelId,
+          chatId: jid,
+          agentId: agent.id,
+          status: curadoria.statusEfetivo(agent.id),
+        },
         'Agente em standby; mensagem registrada mas nao respondida'
       );
       return;
     }
+
+    const curada = curadoria.publicada(agent.id);
 
     // --- interruptor manual do canal ---
     const channelDoc = await Channel.findOne({ channelId }).lean();
@@ -104,6 +115,7 @@ function registerBridge(io) {
       channelNumber: manager.getState(channelId).phoneNumber,
       verifiedBizName,
       pushName,
+      phoneNumber,
     });
 
     if (conversationService.isPaused(conversation)) {
@@ -138,7 +150,7 @@ function registerBridge(io) {
 
       if (!jaAvisou) {
         await manager
-          .sendText(channelId, jid, businessHours.mensagemAusencia(expediente))
+          .sendText(channelId, jid, businessHours.mensagemAusencia(expediente, curada.mensagens?.fora_do_horario))
           .catch((error) => logger.warn({ err: error.message }, 'Falha ao avisar ausencia'));
         await conversationService.patch(channelId, jid, { lastAwayNoticeAt: new Date() });
       }
@@ -155,6 +167,7 @@ function registerBridge(io) {
       chatId: jid,
       sock: manager.socketFor(channelId),
       conversationHint: hint,
+      midia: { audio: curada.audio?.habilitado, imagem: curada.imagem?.habilitado },
     });
 
     if (!part) {
@@ -209,7 +222,19 @@ function registerBridge(io) {
     });
 
     // --- buffer: espera o contato terminar de falar ---
-    buffer.add({ channelId, chatId: jid, part, meta: { pushName, agentId: agent.id } });
+    buffer.add({
+      channelId,
+      chatId: jid,
+      part,
+      meta: {
+        pushName,
+        agentId: agent.id,
+        esperaSegundos: curada.tempoDeEspera?.segundos,
+        // O telefone segue junto ate o agente: e por ele que a ficha do
+        // cliente e encontrada quando o contato pergunta pelo andamento.
+        phoneNumber,
+      },
+    });
 
     await conversationService.patch(channelId, jid, {
       status: Conversation.STATUS.WAITING_MESSAGES,
@@ -218,6 +243,27 @@ function registerBridge(io) {
     });
 
     await markProcessed(channelId, [waMessageId], 'buffered');
+
+    // A ficha operacional se alimenta sozinha: quem escreve entra na carteira
+    // e a mensagem vira linha da timeline, sem ninguem digitar nada.
+    //
+    // Sem telefone nao ha ficha. Um chat por LID cujo numero ainda nao
+    // apareceu criaria um cliente sem identidade, que duplicaria assim que o
+    // telefone surgisse — melhor esperar a proxima mensagem.
+    if (phoneNumber) {
+      clienteService
+        .registrarInteracao({
+          telefone: phoneNumber,
+          nome: pushName,
+          channelId,
+          chatId: jid,
+          direcao: 'in',
+          texto: part.content || part.transcription || part.caption || null,
+        })
+        .catch((error) =>
+          logger.warn({ err: error.message, channelId }, 'Falha ao atualizar a ficha do cliente')
+        );
+    }
   };
 
   // ------------------------------------------------ saida: lote consolidado
@@ -225,7 +271,7 @@ function registerBridge(io) {
   buffer.onFlush = async ({ channelId, chatId, parts, meta }) => {
     const channel = getChannel(channelId);
     const agent = manager.agentFor(channelId);
-    if (!channel || !agent || !isAgentActive(agent)) return;
+    if (!channel || !agent || !curadoria.estaAtivo(agent.id)) return;
 
     const waIds = parts.map((p) => p.waMessageId);
 
@@ -251,6 +297,7 @@ function registerBridge(io) {
         jid: chatId,
         parts,
         pushName: meta?.pushName,
+        phoneNumber: meta?.phoneNumber,
       });
 
       if (result.meta?.handoff) {
@@ -305,6 +352,18 @@ function registerBridge(io) {
       });
 
       await markProcessed(channelId, waIds, 'processed');
+
+      if (meta?.phoneNumber) {
+        clienteService
+          .registrarInteracao({
+            telefone: meta.phoneNumber,
+            channelId,
+            chatId,
+            direcao: 'out',
+            texto: result.reply,
+          })
+          .catch(() => {});
+      }
 
       realtime.conversationMessage({
         channelId,

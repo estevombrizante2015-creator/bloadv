@@ -38,6 +38,39 @@ class ConversationBuffer extends EventEmitter {
     return `${channelId}:${chatId}`;
   }
 
+  janelasPadrao() {
+    return {
+      windowMs: this.windowMs,
+      typingWindowMs: this.typingWindowMs,
+      incompleteWindowMs: this.incompleteWindowMs,
+    };
+  }
+
+  /**
+   * Traduz o "tempo de espera" da curadoria nas tres janelas do debounce.
+   *
+   * O curador pensa em UM numero: quanto esperar para agrupar mensagens
+   * consecutivas. Aqui esse numero vira o TETO da espera normal - a janela
+   * usada enquanto o contato aparece digitando, que e quando ha mesmo mais
+   * mensagem vindo.
+   *
+   * As outras duas so encurtam. Frase terminada continua sendo respondida
+   * rapido, porque esperar 8s alguem que ja disse tudo e latencia pura. Com o
+   * padrao de 8 segundos, o comportamento e identico ao de hoje; baixar para 2
+   * torna tudo imediato, e subir para 20 so alonga a espera de quem esta
+   * visivelmente escrevendo.
+   */
+  janelasPara(segundos) {
+    const teto = Math.max(1, Number(segundos) || 0) * 1000;
+    if (!teto) return this.janelasPadrao();
+
+    return {
+      windowMs: Math.min(this.windowMs, teto),
+      incompleteWindowMs: Math.min(this.incompleteWindowMs, teto),
+      typingWindowMs: teto,
+    };
+  }
+
   entry(channelId, chatId) {
     const key = ConversationBuffer.key(channelId, chatId);
     if (!this.entries.has(key)) {
@@ -52,6 +85,9 @@ class ConversationBuffer extends EventEmitter {
         firstAt: null,
         currentWindowMs: this.windowMs,
         processing: false,
+        // Janelas desta conversa. Comecam nas do processo e podem ser
+        // estreitadas pelo agente que atende (curadoria), sem afetar as outras.
+        janelas: this.janelasPadrao(),
       });
     }
     return this.entries.get(key);
@@ -88,18 +124,18 @@ class ConversationBuffer extends EventEmitter {
    * raciocinio: responde rapido. Frase cortada no meio, ou mensagem muito
    * curta ("oi", "entao"), quase sempre tem continuacao - vale esperar mais.
    */
-  windowFor(part) {
+  windowFor(part, janelas = this.janelasPadrao()) {
     const texto = (part?.content || part?.caption || '').trim();
-    if (!texto) return this.windowMs;
+    if (!texto) return janelas.windowMs;
 
-    if (/[.!?…]$/.test(texto)) return this.windowMs;
-    if (texto.length <= 12) return this.incompleteWindowMs;
+    if (/[.!?…]$/.test(texto)) return janelas.windowMs;
+    if (texto.length <= 12) return janelas.incompleteWindowMs;
     // A borda de palavra importa: sem ela "cidade" casaria com "de", e toda
     // frase terminada nessas letras viraria falso positivo de incompleta.
     if (/[,;:]$|\b(e|ou|mas|que|de|para|com|entao|ai|ja|nao)$/i.test(texto)) {
-      return this.incompleteWindowMs;
+      return janelas.incompleteWindowMs;
     }
-    return this.windowMs;
+    return janelas.windowMs;
   }
 
   /** (Re)arma o timer de silencio desta conversa. */
@@ -121,11 +157,11 @@ class ConversationBuffer extends EventEmitter {
   onTyping(channelId, chatId) {
     const entry = this.entries.get(ConversationBuffer.key(channelId, chatId));
     if (!entry || entry.processing || !entry.parts.length) return false;
-    if (entry.currentWindowMs >= this.typingWindowMs) return false;
+    if (entry.currentWindowMs >= entry.janelas.typingWindowMs) return false;
 
-    this.arm(entry, this.typingWindowMs);
+    this.arm(entry, entry.janelas.typingWindowMs);
     logger.debug(
-      { ev: EV.BUFFER_UPDATED, channelId, chatId, windowMs: this.typingWindowMs },
+      { ev: EV.BUFFER_UPDATED, channelId, chatId, windowMs: entry.janelas.typingWindowMs },
       'Contato digitando; janela estendida'
     );
     return true;
@@ -139,7 +175,7 @@ class ConversationBuffer extends EventEmitter {
     const entry = this.entries.get(ConversationBuffer.key(channelId, chatId));
     if (!entry || entry.processing || !entry.parts.length) return false;
 
-    this.arm(entry, Math.min(this.windowMs, entry.currentWindowMs));
+    this.arm(entry, Math.min(entry.janelas.windowMs, entry.currentWindowMs));
     return true;
   }
 
@@ -150,6 +186,7 @@ class ConversationBuffer extends EventEmitter {
   add({ channelId, chatId, part, meta = {} }) {
     const entry = this.entry(channelId, chatId);
     entry.meta = { ...entry.meta, ...meta };
+    if (meta.esperaSegundos) entry.janelas = this.janelasPara(meta.esperaSegundos);
 
     if (entry.processing) {
       entry.pending.push(part);
@@ -165,7 +202,7 @@ class ConversationBuffer extends EventEmitter {
     if (first) entry.firstAt = Date.now();
 
     // Debounce adaptativo: cada mensagem nova estende a janela desta conversa.
-    this.arm(entry, this.windowFor(part));
+    this.arm(entry, this.windowFor(part, entry.janelas));
 
     // Teto absoluto, armado uma unica vez por lote.
     if (!entry.maxTimer) {

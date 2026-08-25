@@ -21,8 +21,10 @@ const ConversationSchema = new mongoose.Schema(
     sessionId: { type: String, required: true, index: true }, // canal/instancia
     phoneNumber: String, // numero do contato (digitos)
     pushName: String, // nome que o contato exibe no WhatsApp
-    // O WhatsApp usa LID no lugar do telefone em muitos chats; o numero real
-    // nao e exposto pelo protocolo, entao nao ha o que preencher.
+    // O WhatsApp endereca muitos chats por LID em vez do telefone. O numero
+    // real chega junto das mensagens (`key.senderPn`) e e gravado aqui e em
+    // LidMapping - ver whatsapp/lid.resolver.js. `isLid` diz o formato do
+    // chatId, nao que o telefone seja desconhecido.
     isLid: { type: Boolean, default: false },
     lid: String,
     channelNumber: String, // numero NOSSO que atende esta conversa

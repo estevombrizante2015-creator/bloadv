@@ -5,6 +5,8 @@ const manager = require('./src/whatsapp/baileys.manager');
 const { registerBridge } = require('./src/whatsapp/bridge');
 const channelsRoutes = require('./src/routes/channels.routes');
 const conversationsRoutes = require('./src/routes/conversations.routes');
+const curadoriaRoutes = require('./src/curadoria/curadoria.routes');
+const clientesRoutes = require('./src/clientes/clientes.routes');
 const authRoutes = require('./src/auth/auth.routes');
 const { registerAuthHook, socketAuthMiddleware } = require('./src/auth/auth.hook');
 const authService = require('./src/auth/auth.service');
@@ -12,6 +14,11 @@ const socketHandler = require('./src/socket/socket.handler');
 const { listTiers } = require('./src/agent/models.registry');
 const { corsOrigin } = require('./src/config/cors');
 const agentResolver = require('./src/config/agent.resolver');
+const curadoria = require('./src/curadoria/config.service');
+const lidResolver = require('./src/whatsapp/lid.resolver');
+const authStore = require('./src/whatsapp/auth.store');
+const clientePipeline = require('./src/clientes/pipeline.service');
+const clienteService = require('./src/clientes/cliente.service');
 const realtime = require('./src/utils/realtime');
 
 async function start() {
@@ -64,6 +71,8 @@ async function start() {
   await fastify.register(authRoutes);
   await fastify.register(channelsRoutes);
   await fastify.register(conversationsRoutes);
+  await fastify.register(curadoriaRoutes);
+  await fastify.register(clientesRoutes);
 
   fastify.get('/health', async () => ({
     status: 'ok',
@@ -97,6 +106,28 @@ async function start() {
   // Atribuicoes feitas no painel precisam estar em memoria ANTES de qualquer
   // canal reconectar, senao o vinculo sairia errado nos primeiros segundos.
   await agentResolver.load();
+
+  // Pelo mesmo motivo: um canal que reconecte antes disso atenderia com a
+  // configuracao de fabrica, ignorando o que a equipe publicou na curadoria.
+  await curadoria.carregar();
+
+  // Vinculos LID -> telefone. Antes dos canais subirem, senao as primeiras
+  // mensagens de um chat por LID entram sem numero e a ficha do contato nasce
+  // sem o dado que a identifica.
+  await lidResolver.carregar();
+
+  // Status e etapas configurados pela equipe. Antes das rotas atenderem: sem
+  // eles, a lista de clientes sairia com status sem rotulo e o kanban sem
+  // colunas.
+  await clientePipeline.carregar();
+
+  // O telefone deixou de ser obrigatorio; o indice antigo precisa acompanhar,
+  // senao a segunda ficha sem numero falha no meio de uma importacao.
+  await clienteService.garantirIndices();
+
+  // Quais canais tem credenciais. Precisa vir antes do autoStart: e por este
+  // conjunto que ele decide reconectar em vez de pedir QR.
+  await authStore.carregar();
 
   if (env.wa.autoStart) {
     await manager.autoStart();

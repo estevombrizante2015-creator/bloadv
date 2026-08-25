@@ -73,7 +73,15 @@ const FALLBACK_LABEL = {
  *
  * @returns {Promise<object|null>} parte normalizada, ou null se deve ser ignorada
  */
-async function normalize({ msg, channelId, chatId, sock, conversationHint }) {
+/**
+ * @param {object} [midia] o que a curadoria autoriza interpretar neste agente.
+ *   Desligar audio ou imagem NAO descarta a mensagem: ela vira uma parte
+ *   marcada, o agente e avisado que nao consegue ler aquilo e pede o conteudo
+ *   em texto. Descartar em silencio deixaria o contato falando sozinho, que e
+ *   o pior desfecho possivel para quem mandou um audio pedindo ajuda.
+ */
+async function normalize({ msg, channelId, chatId, sock, conversationHint, midia }) {
+  const interpretar = { audio: midia?.audio !== false, imagem: midia?.imagem !== false };
   const inner = unwrap(msg.message);
   const type = messageType(inner);
   const timestamp = Number(msg.messageTimestamp) * 1000 || Date.now();
@@ -94,6 +102,10 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint }) {
   }
 
   if (type === 'audio') {
+    if (!interpretar.audio) {
+      return { ...base, failed: true, naoInterpretada: true, transcription: null };
+    }
+
     const media = await mediaService.download({ msg, type: 'audio', sock, channelId });
     if (!media.ok) {
       return { ...base, failed: true, error: media.error, transcription: null };
@@ -119,6 +131,11 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint }) {
 
   if (type === 'image') {
     const caption = (extractText(inner) || '').trim() || null;
+
+    if (!interpretar.imagem) {
+      return { ...base, caption, failed: true, naoInterpretada: true, description: null };
+    }
+
     const media = await mediaService.download({ msg, type: 'image', sock, channelId });
 
     if (!media.ok) {
@@ -170,10 +187,14 @@ function renderBatch(parts) {
       lines.push(part.content);
     } else if (part.type === 'audio') {
       if (part.transcription) lines.push(`[audio transcrito] ${part.transcription}`);
+      // O marcador distingue "falhou" de "desligado na configuracao": no
+      // segundo caso pedir para reenviar o audio nao resolveria nada.
+      else if (part.naoInterpretada) lines.push('[audio recebido; voce nao consegue ouvir audio]');
       else lines.push('[audio recebido, nao foi possivel transcrever]');
     } else if (part.type === 'image') {
       const pieces = [];
       if (part.description) pieces.push(`[imagem] ${part.description}`);
+      else if (part.naoInterpretada) pieces.push('[imagem recebida; voce nao consegue ver imagens]');
       else pieces.push('[imagem recebida, nao foi possivel analisar]');
       if (part.caption) pieces.push(`[legenda da imagem] ${part.caption}`);
       lines.push(pieces.join('\n'));

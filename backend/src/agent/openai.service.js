@@ -50,7 +50,7 @@ async function complete({
     temperature: temperature ?? spec.temperature,
     max_tokens: maxTokens ?? spec.maxOutputTokens,
     messages: [
-      { role: 'system', content: system || spec.persona || '' },
+      { role: 'system', content: system || '' },
       ...messages,
       ...(user ? [{ role: 'user', content: user }] : []),
     ].filter((m) => m.content),

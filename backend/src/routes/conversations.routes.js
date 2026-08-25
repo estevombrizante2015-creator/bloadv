@@ -2,9 +2,17 @@ const { Conversation, Contact, Message, AgentRun, GuardrailEvent } = require('..
 const manager = require('../whatsapp/baileys.manager');
 const conversationService = require('../conversation/conversation.service');
 const buffer = require('../conversation/buffer.service');
-const { formatNumber } = require('../config/agents.config');
+const {
+  formatNumber,
+  digitsOnly,
+  jidToIdentifier,
+  comDdiBrasil,
+} = require('../config/agents.config');
+const lidResolver = require('../whatsapp/lid.resolver');
+const clienteService = require('../clientes/cliente.service');
 const { getChannel } = require('../config/channels');
 const logger = require('../utils/logger');
+const { EV } = require('../utils/events');
 const realtime = require('../utils/realtime');
 
 /**
@@ -15,17 +23,21 @@ const realtime = require('../utils/realtime');
 
 /** Junta o que o painel precisa mostrar numa linha da lista. */
 function resumo(conversation, contact) {
+  // Conversas gravadas antes da descoberta do telefone nao tem `phoneNumber`;
+  // o vinculo aprendido depois resolve sem precisar de migracao.
+  const numero = conversation.phoneNumber || lidResolver.resolver(conversation.chatId);
+
   return {
     id: conversation._id.toString(),
     chatId: conversation.chatId,
     channelId: conversation.sessionId,
     channelLabel: getChannel(conversation.sessionId)?.label || conversation.sessionId,
     nome: contact?.pushName || conversation.pushName || null,
-    numero: conversation.phoneNumber ? formatNumber(conversation.phoneNumber) : null,
-    numeroBruto: conversation.phoneNumber || null,
-    // Chat por LID: o telefone nao existe no protocolo. Melhor dizer isso do
-    // que exibir o identificador formatado como se fosse um numero.
-    isLid: Boolean(conversation.isLid),
+    numero: numero ? formatNumber(numero) : null,
+    numeroBruto: numero || null,
+    // Chat por LID cujo telefone ainda nao apareceu. Melhor dizer isso do que
+    // exibir o identificador formatado como se fosse um numero.
+    isLid: Boolean(conversation.isLid) && !numero,
     identificador: conversation.lid || null,
     agentId: conversation.agentId,
     agentType: conversation.agentType,
@@ -286,6 +298,64 @@ async function conversationsRoutes(fastify) {
     );
     if (!conversation) return reply.code(404).send({ error: 'Conversa nao encontrada' });
     return conversation;
+  });
+
+  /**
+   * Informa o telefone real de um chat enderecado por LID.
+   *
+   * O WhatsApp revela o numero quando quer: `senderPn` nao vem em toda
+   * mensagem, o evento de compartilhamento depende do contato e a agenda so
+   * ajuda se a pessoa estiver nela. Quando nenhuma fonte entrega, quem esta no
+   * painel consegue ver o numero no proprio aplicativo — e digitar aqui e
+   * melhor do que a equipe conviver com um identificador que nao diz nada.
+   *
+   * O vinculo vale para o LID, nao para esta conversa: o mesmo contato falando
+   * com outro numero do escritorio ja aparece identificado.
+   */
+  fastify.post('/api/conversations/:channelId/:chatId/numero', async (request, reply) => {
+    const channelId = request.params.channelId;
+    const chatId = decodeURIComponent(request.params.chatId);
+
+    const conversation = await conversationService.get(channelId, chatId);
+    if (!conversation) return reply.code(404).send({ error: 'Conversa nao encontrada' });
+
+    const telefone = digitsOnly(request.body?.telefone);
+    if (!telefone || telefone.length < 10) {
+      return reply.code(400).send({
+        error: 'Informe o numero com DDD, como aparece no WhatsApp. Ex.: (19) 99638-3884',
+      });
+    }
+
+    // Sem DDI, assume Brasil: quem digita olhando o aplicativo copia
+    // "(19) 99638-3884", nao "+55 19...".
+    const completo = comDdiBrasil(telefone);
+    const lid = conversation.lid || jidToIdentifier(chatId);
+
+    lidResolver.aprender({ lid, phoneNumber: completo, origem: 'manual' });
+
+    // Todas as conversas deste LID, em qualquer canal.
+    await Conversation.updateMany({ chatId }, { $set: { phoneNumber: completo } });
+
+    // A ficha operacional passa a existir (ou a encontrar) esta pessoa.
+    await clienteService
+      .garantirDoWhatsApp({
+        telefone: completo,
+        nome: conversation.pushName,
+        channelId,
+        chatId,
+      })
+      .catch((error) =>
+        logger.warn({ err: error.message, chatId }, 'Falha ao vincular a ficha do cliente')
+      );
+
+    logger.info(
+      { ev: EV.LID_DEFINIDO_A_MAO, lid, channelId, por: request.user?.email },
+      'Telefone de um chat por LID informado no painel'
+    );
+
+    const atualizada = await conversationService.get(channelId, chatId);
+    const contact = await Contact.findOne({ channelId, jid: chatId }).lean();
+    return { conversa: resumo(atualizada, contact) };
   });
 }
 

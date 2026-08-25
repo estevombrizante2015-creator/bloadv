@@ -150,7 +150,7 @@ async function login({ email, password, remember = false }) {
   };
 }
 
-async function createUser({ email, password, name, role = 'operador' }) {
+async function createUser({ email, password, name, role = 'curador' }) {
   const normalized = String(email || '').toLowerCase().trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
     throw new Error('Email invalido');

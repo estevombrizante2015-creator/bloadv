@@ -40,9 +40,13 @@ const STATUS_LABEL: Record<string, { texto: string; cor: string }> = {
 };
 
 /**
- * O WhatsApp usa LID (`1234@lid`) no lugar do telefone em muitos chats, e o
- * numero real nao e exposto pelo protocolo. Melhor dizer "identificador" do
- * que formatar o LID como se fosse um telefone.
+ * O WhatsApp endereca muitos chats por LID (`1234@lid`), que NAO e o telefone.
+ * O numero real chega junto das mensagens e fica gravado (ver
+ * backend/src/whatsapp/lid.resolver.js), entao `numero` costuma estar
+ * preenchido mesmo nesses chats.
+ *
+ * O caso `isLid` sobra para quando o telefone ainda nao apareceu — e ai vale
+ * dizer "identificador" em vez de formatar o LID como se fosse um telefone.
  */
 const identificacao = (c: ConversationSummary) =>
   c.numero ?? (c.isLid ? `ID ${c.identificador}` : c.chatId);
@@ -416,9 +420,13 @@ export default function ConversasPage() {
                       {selecionada.agentId && ` · ${selecionada.agentId}`}
                     </p>
                     {selecionada.isLid && (
-                      <p className="mt-1 text-[10px] text-navy-600">
-                        O WhatsApp nao expoe o telefone neste chat (identificador LID).
-                      </p>
+                      <InformarNumero
+                        conversa={selecionada}
+                        aoDefinir={(atualizada) => {
+                          setSelecionada(atualizada);
+                          carregar(busca || undefined, canalFiltro || undefined);
+                        }}
+                      />
                     )}
                   </div>
 
@@ -662,5 +670,106 @@ function AbaCanal({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * INFORMAR O TELEFONE DE UM CHAT POR LID
+ * --------------------------------------
+ * O WhatsApp endereca alguns chats por um identificador opaco e nem sempre
+ * revela o telefone por tras dele — `senderPn` nao vem em toda mensagem, o
+ * evento de compartilhamento depende do contato, e a agenda so ajuda se a
+ * pessoa estiver nela.
+ *
+ * Quando nenhuma fonte entrega, quem esta no painel consegue ver o numero no
+ * proprio aplicativo. Digitar aqui e melhor do que a equipe conviver com um
+ * "ID 40351318433948" que nao diz nada — e o vinculo passa a valer para este
+ * contato em todos os numeros do escritorio, nao so nesta conversa.
+ */
+function InformarNumero({
+  conversa,
+  aoDefinir,
+}: {
+  conversa: ConversationSummary;
+  aoDefinir: (conversa: ConversationSummary) => void;
+}) {
+  const [aberto, setAberto] = useState(false);
+  const [telefone, setTelefone] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  const salvar = async () => {
+    setSalvando(true);
+    setErro(null);
+    try {
+      const { conversa: atualizada } = await conversationsApi.definirNumero(
+        conversa.channelId,
+        conversa.chatId,
+        telefone
+      );
+      aoDefinir(atualizada);
+      setAberto(false);
+      setTelefone('');
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'Nao foi possivel salvar.');
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  if (!aberto) {
+    return (
+      <p className="mt-1 text-[10px] leading-relaxed text-navy-600">
+        O WhatsApp nao informou o telefone deste contato. Ele aparece sozinho assim que o
+        aplicativo entregar o numero —{' '}
+        <button
+          onClick={() => setAberto(true)}
+          className="text-gold-400/80 underline-offset-2 transition-colors hover:text-gold-300 hover:underline"
+        >
+          ou informe agora
+        </button>
+        .
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <input
+          autoFocus
+          value={telefone}
+          onChange={(e) => setTelefone(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') salvar();
+            if (e.key === 'Escape') setAberto(false);
+          }}
+          placeholder="(19) 99638-3884"
+          className="w-44 rounded-lg border border-navy-700 bg-navy-900 px-2.5 py-1.5 text-xs tabular-nums text-cream placeholder:text-muted/50 focus:border-gold-500/40 focus:outline-none"
+        />
+        <button
+          onClick={salvar}
+          disabled={salvando || telefone.replace(/\D/g, '').length < 10}
+          className="rounded-lg border border-gold-500/40 px-2.5 py-1.5 text-xs text-gold-200 transition-colors hover:border-gold-400 disabled:opacity-40"
+        >
+          {salvando ? 'Salvando…' : 'Salvar'}
+        </button>
+        <button
+          onClick={() => setAberto(false)}
+          className="px-1.5 py-1.5 text-xs text-muted transition-colors hover:text-cream"
+        >
+          Cancelar
+        </button>
+      </div>
+
+      {erro ? (
+        <p className="text-[10px] text-red-300">{erro}</p>
+      ) : (
+        <p className="text-[10px] text-navy-600">
+          Como aparece no WhatsApp, com DDD. Vale para este contato em todos os numeros do
+          escritorio.
+        </p>
+      )}
+    </div>
   );
 }

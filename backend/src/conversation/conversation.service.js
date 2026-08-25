@@ -1,5 +1,6 @@
 const { Conversation, Message } = require('../models');
 const { jidToNumber, isLidJid, jidToIdentifier } = require('../config/agents.config');
+const lidResolver = require('../whatsapp/lid.resolver');
 const logger = require('../utils/logger');
 const { EV } = require('../utils/events');
 
@@ -15,16 +16,41 @@ const PAUSED_STATUSES = new Set([
   Conversation.STATUS.CLOSED,
 ]);
 
-/** Cria ou atualiza a conversa, sempre reafirmando qual agente a atende. */
-async function ensure({ channelId, chatId, agent, channelNumber, verifiedBizName, pushName }) {
+/**
+ * Cria ou atualiza a conversa, sempre reafirmando qual agente a atende.
+ *
+ * @param {string} [phoneNumber] telefone real do contato, quando o protocolo
+ *   revelou (ver whatsapp/lid.resolver). Em chat por LID e a unica forma de
+ *   saber o numero - o `chatId` sozinho e um identificador opaco.
+ */
+async function ensure({
+  channelId,
+  chatId,
+  agent,
+  channelNumber,
+  verifiedBizName,
+  pushName,
+  phoneNumber,
+}) {
+  const eLid = isLidJid(chatId);
+
   const set = {
     agentId: agent.id,
     agentType: agent.role,
     agentStatusAtBind: agent.status,
-    phoneNumber: jidToNumber(chatId),
-    isLid: isLidJid(chatId),
-    lid: isLidJid(chatId) ? jidToIdentifier(chatId) : null,
+    isLid: eLid,
+    lid: eLid ? jidToIdentifier(chatId) : null,
   };
+
+  // Chat comum: o numero esta no proprio jid. Chat por LID: vale o que o
+  // protocolo revelou agora, ou o que ja foi aprendido antes.
+  //
+  // A atribuicao e condicional de proposito. `senderPn` nao vem em toda
+  // mensagem, e sobrescrever com null o numero ja descoberto faria o painel
+  // perder o telefone a cada mensagem que chegasse sem ele.
+  const numero = eLid ? phoneNumber || lidResolver.resolver(chatId) : jidToNumber(chatId);
+  if (numero) set.phoneNumber = numero;
+
   if (channelNumber) set.channelNumber = channelNumber;
   if (pushName) set.pushName = pushName;
 

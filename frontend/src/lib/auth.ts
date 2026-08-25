@@ -4,8 +4,23 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string | null;
-  role: 'admin' | 'operador';
+  /** `operador` e o papel legado; vale como curador. Ver backend/src/auth/roles.js. */
+  role: 'admin' | 'curador' | 'visualizador' | 'operador';
   lastLoginAt: string | null;
+  /**
+   * O que este usuario pode fazer, ja resolvido pelo servidor. A tela usa para
+   * esconder o que nao cabe; cada rota confere de novo do outro lado.
+   */
+  permissoes?: {
+    papel: 'admin' | 'curador' | 'visualizador';
+    ver: boolean;
+    editar: boolean;
+    testar: boolean;
+    publicar: boolean;
+    restaurar: boolean;
+    alterarStatus: boolean;
+    gerenciarUsuarios: boolean;
+  };
 }
 
 /** Servidor inalcancavel ou com falha propria: a sessao continua valida. */

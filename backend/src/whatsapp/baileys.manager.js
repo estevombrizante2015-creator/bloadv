@@ -9,13 +9,14 @@ const { env } = require('../config/env');
 const { CHANNELS, getChannel } = require('../config/channels');
 const { jidToNumber, formatNumber } = require('../config/agents.config');
 const agentResolver = require('../config/agent.resolver');
+const lidResolver = require('./lid.resolver');
+const authStore = require('./auth.store');
 const { Channel } = require('../models');
 const logger = require('../utils/logger');
 const { EV } = require('../utils/events');
 
 const makeWASocket = baileys.makeWASocket || baileys.default;
 const {
-  useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   DisconnectReason,
@@ -29,8 +30,12 @@ const waLogger = pino({ level: 'silent' });
  * GERENCIADOR MULTI-SESSAO
  * ------------------------
  * Uma instancia Baileys por canal (leads-1, leads-2, clients-1).
- * As credenciais ficam em backend/sessions/<channelId>/ - diretorio gitignorado,
- * pois quem tem esses arquivos assume a conta de WhatsApp.
+ *
+ * As credenciais ficam no BANCO (ver whatsapp/auth.store). Elas moravam em
+ * `backend/sessions/`, e em container isso significava perder o pareamento a
+ * cada deploy — o escritorio tinha de ler o QR de novo em cada numero. O banco
+ * ja e obrigatorio e duravel; guardar la elimina a dependencia de um volume em
+ * vez de documenta-la.
  *
  * Eventos emitidos: 'channel:update', 'message:in', 'message:out'.
  */
@@ -119,8 +124,13 @@ class BaileysManager extends EventEmitter {
     return path.join(env.wa.sessionsDir, channelId);
   }
 
+  /**
+   * As credenciais vivem no banco (ver whatsapp/auth.store). O conjunto e
+   * mantido em memoria porque esta funcao roda dentro de `publicState`, que e
+   * sincrona e e chamada a cada atualizacao enviada ao painel.
+   */
   hasCredentials(channelId) {
-    return fs.existsSync(path.join(this.sessionDir(channelId), 'creds.json'));
+    return authStore.temCredenciais(channelId);
   }
 
   async patch(channelId, changes) {
@@ -129,12 +139,24 @@ class BaileysManager extends EventEmitter {
 
     const persistable = {
       status: state.status,
-      phoneNumber: state.phoneNumber,
-      pushName: state.pushName,
       lastError: state.lastError,
       label: state.label,
       role: state.role,
     };
+
+    /**
+     * O numero so e gravado quando existe — ou quando quem chamou pediu
+     * explicitamente para limpa-lo (logout, sessao encerrada no aparelho).
+     *
+     * Guarda, nao correcao: hoje o `autoStart` restaura `state.phoneNumber` do
+     * banco antes de qualquer `patch`, entao o caminho conhecido nao apaga
+     * nada. Mas `patch` sobre um estado recem-criado gravaria nulo por cima de
+     * um numero valido, e o preco disso seria alto — o vinculo numero ->
+     * agente sai do mesmo campo, e sem ele o canal volta como "nao atribuido"
+     * e para de responder. Escrever so o que se sabe custa uma linha.
+     */
+    if (state.phoneNumber || 'phoneNumber' in changes) persistable.phoneNumber = state.phoneNumber;
+    if (state.pushName || 'pushName' in changes) persistable.pushName = state.pushName;
     if (state.agentId) {
       persistable.agentId = state.agentId;
       persistable.agentLabel = state.agentLabel;
@@ -191,14 +213,11 @@ class BaileysManager extends EventEmitter {
       qrExpiresAt: null,
     });
 
-    const dir = this.sessionDir(channelId);
-    fs.mkdirSync(dir, { recursive: true });
-
     let authState;
     let saveCreds;
     let version;
     try {
-      ({ state: authState, saveCreds } = await useMultiFileAuthState(dir));
+      ({ state: authState, saveCreds } = await authStore.useMongoAuthState(channelId));
       ({ version } = await fetchLatestBaileysVersion());
     } catch (error) {
       // Sem liberar a flag, o canal ficaria permanentemente recusando conexao.
@@ -224,6 +243,24 @@ class BaileysManager extends EventEmitter {
     state.sock = sock;
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Descoberta do telefone real por tras do LID. Nenhuma fonte e garantida
+    // sozinha - o WhatsApp revela o numero quando quer - entao escutamos todas
+    // e gravamos o que cada uma entregar.
+    //
+    // A sincronizacao inicial e a mais rica: ela traz a agenda inteira da conta
+    // com os DOIS enderecos de cada contato (`lid` e `jid`). E o que resolve
+    // conversas que ja existiam antes deste codigo, sem esperar mensagem nova.
+    sock.ev.on('messaging-history.set', ({ contacts }) => {
+      const aprendidos = lidResolver.observarContatos(contacts);
+      if (aprendidos) {
+        logger.info({ channelId, aprendidos }, 'Telefones descobertos na sincronizacao inicial');
+      }
+    });
+
+    sock.ev.on('chats.phoneNumberShare', (dados) => lidResolver.observarCompartilhamento(dados));
+    sock.ev.on('contacts.upsert', (contatos) => lidResolver.observarContatos(contatos));
+    sock.ev.on('contacts.update', (contatos) => lidResolver.observarContatos(contatos));
     sock.ev.on('connection.update', (update) => this.onConnectionUpdate(channelId, update));
     sock.ev.on('messages.upsert', (payload) => this.onMessagesUpsert(channelId, payload));
 
@@ -485,10 +522,17 @@ class BaileysManager extends EventEmitter {
         // Sem assinar, o WhatsApp nao envia os eventos de "digitando".
         this.getState(channelId).sock?.presenceSubscribe?.(jid).catch(() => {});
 
+        // O telefone real vem no proprio stanza (`key.senderPn`) quando o chat
+        // e enderecado por LID. Sem ler isto aqui, o painel so tem o
+        // identificador opaco - e era isso que aparecia como se fosse numero.
+        const { phoneNumber, lid } = lidResolver.observarMensagem(msg);
+
         const payload = {
           channelId,
           jid,
           msg,
+          phoneNumber,
+          lid,
           pushName: msg.pushName,
           waMessageId: msg.key.id,
           // Nome verificado de conta Business. E so um dado - NAO bloqueia nada:
@@ -587,12 +631,18 @@ class BaileysManager extends EventEmitter {
   }
 
   async clearCredentials(channelId) {
-    const dir = this.sessionDir(channelId);
     try {
-      await fs.promises.rm(dir, { recursive: true, force: true });
+      await authStore.apagar(channelId);
     } catch (error) {
       logger.warn({ err: error.message, channelId }, 'Falha ao apagar credenciais');
     }
+
+    // A pasta antiga pode ter sobrado de antes da mudanca para o banco. Deixa-la
+    // para tras faria a migracao ressuscitar a sessao que acabou de ser
+    // encerrada, no proximo boot.
+    await fs.promises
+      .rm(this.sessionDir(channelId), { recursive: true, force: true })
+      .catch(() => {});
   }
 
   /**
@@ -635,6 +685,29 @@ class BaileysManager extends EventEmitter {
           logger.error({ err: error.message, channelId: channel.id }, 'Auto-start falhou')
         );
       } else {
+        /**
+         * O canal ja esteve pareado (o banco guarda o numero) mas nao ha
+         * credencial nenhuma. Isso NAO deveria acontecer com as credenciais no
+         * banco — se acontecer, alguem apagou a colecao, trocou de banco ou
+         * restaurou um dump antigo.
+         *
+         * O aviso existe porque o sintoma sozinho ("preciso ler o QR de novo")
+         * nao diz nada sobre a causa, e foi assim que o problema passou
+         * despercebido enquanto as credenciais viviam em disco efemero.
+         */
+        if (doc?.phoneNumber) {
+          logger.error(
+            {
+              ev: EV.WA_CREDENCIAIS_PERDIDAS,
+              channelId: channel.id,
+              phone: formatNumber(doc.phoneNumber),
+              pareadoEm: doc.lastConnectedAt,
+            },
+            'Canal ja pareado esta sem credenciais: sera preciso ler o QR de novo. ' +
+              'Verifique se o banco e o mesmo de antes e se a colecao wasessions existe.'
+          );
+        }
+
         await this.patch(channel.id, { status: 'disconnected' });
       }
     }

@@ -103,9 +103,26 @@ function proximaAbertura(diaSemana) {
   return `amanha as ${env.expediente.inicio}`;
 }
 
-/** Mensagem enviada uma vez por periodo fora do expediente. */
-function mensagemAusencia(estado) {
+/**
+ * Mensagem enviada uma vez por periodo fora do expediente.
+ *
+ * `texto` vem da curadoria e tem precedencia. E enviada LITERALMENTE: fora do
+ * expediente o agente nem chega a rodar, entao nao ha quem improvise. Dois
+ * marcadores sao trocados pelo horario real, para o texto nao desatualizar
+ * quando o escritorio mudar o expediente:
+ *
+ *   {horario}  -> "das 08:00 as 18:30"
+ *   {retorno}  -> "amanha as 08:00"
+ */
+function mensagemAusencia(estado, texto) {
   const faixa = `${env.expediente.inicio} as ${env.expediente.fim}`;
+
+  if (String(texto || '').trim()) {
+    return String(texto)
+      .replace(/\{horario\}/gi, `das ${faixa}`)
+      .replace(/\{retorno\}/gi, estado.abreEm || 'em breve')
+      .trim();
+  }
 
   if (estado.motivo === 'fim_de_semana') {
     return (
