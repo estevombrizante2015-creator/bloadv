@@ -353,7 +353,16 @@ export default function ConnectionCard({
 
       {/* rodape com acoes */}
       <footer className="flex items-center justify-between gap-2 border-t border-navy-800 px-4 py-3">
-        <label className="flex cursor-pointer select-none items-center gap-2">
+        {/*
+          Este interruptor vale para TODAS as conversas deste numero. Existe
+          outro, por pessoa, em Conversas — e confundir os dois custa caro:
+          desligar aqui para assumir um atendimento tira o agente de todo mundo.
+          Por isso o rotulo diz o alcance, nao so o nome do agente.
+        */}
+        <label
+          className="flex cursor-pointer select-none items-center gap-2"
+          title="Vale para todas as conversas deste numero. Para uma pessoa so, use o interruptor em Conversas."
+        >
           <input
             type="checkbox"
             checked={agentEnabled}
@@ -364,10 +373,11 @@ export default function ConnectionCard({
           <span className="text-xs text-muted">
             {boundAgent ? (
               <>
-                Responder por <strong className="font-medium text-cream">{boundAgent.label}</strong>
+                <strong className="font-medium text-cream">{boundAgent.label}</strong> em{' '}
+                <strong className="font-medium text-cream">todas</strong> as conversas
               </>
             ) : (
-              'Agente'
+              'Agente em todas as conversas'
             )}
           </span>
         </label>

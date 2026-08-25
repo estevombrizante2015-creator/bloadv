@@ -40,6 +40,25 @@ const STATUS_LABEL: Record<string, { texto: string; cor: string }> = {
 };
 
 /**
+ * Por que o agente parou, em portugues.
+ *
+ * Os motivos sao chaves internas ("atendimento_humano") e apareciam cruas no
+ * aviso da conversa. Quem le e um atendente, nao quem escreveu o codigo — e um
+ * sublinhado no meio da frase e a marca de um sistema falando consigo mesmo.
+ */
+const MOTIVO_DA_PAUSA: Record<string, string> = {
+  atendimento_humano: 'você assumiu o atendimento',
+  pausada_no_painel: 'pausada no painel',
+  possible_bot_loop: 'o outro lado parece ser automático',
+  resposta_repetida: 'o agente estava repetindo a mesma resposta',
+  violacao_guardrail_saida: 'a resposta foi barrada pelas regras',
+  erro_openai: 'houve uma falha técnica',
+};
+
+const motivoLegivel = (motivo: string | null) =>
+  motivo ? MOTIVO_DA_PAUSA[motivo] || motivo.replace(/_/g, ' ') : null;
+
+/**
  * O WhatsApp endereca muitos chats por LID (`1234@lid`), que NAO e o telefone.
  * O numero real chega junto das mensagens e fica gravado (ver
  * backend/src/whatsapp/lid.resolver.js), entao `numero` costuma estar
@@ -80,8 +99,21 @@ export default function ConversasPage() {
   const [rascunho, setRascunho] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erroEnvio, setErroEnvio] = useState<string | null>(null);
+  const [alternandoAgente, setAlternandoAgente] = useState(false);
+  /** Enviar assume o atendimento? Fica ligado; desligar serve para so complementar. */
+  const [assumirAoEnviar, setAssumirAoEnviar] = useState(true);
 
   const carregarRef = useRef<(() => void) | null>(null);
+
+  /** Reflete na lista o que mudou numa conversa, sem recarregar tudo do servidor. */
+  const aplicarNaLista = useCallback(
+    (channelId: string, chatId: string, mudancas: Partial<ConversationSummary>) => {
+      setLista((prev) =>
+        prev.map((c) => (c.channelId === channelId && c.chatId === chatId ? { ...c, ...mudancas } : c))
+      );
+    },
+    []
+  );
 
   const carregar = useCallback(async (q?: string, channelId?: string) => {
     setCarregando(true);
@@ -225,7 +257,12 @@ export default function ConversasPage() {
     setEnviando(true);
     setErroEnvio(null);
     try {
-      const r = await conversationsApi.send(selecionada.channelId, selecionada.chatId, texto);
+      const r = await conversationsApi.send(
+        selecionada.channelId,
+        selecionada.chatId,
+        texto,
+        assumirAoEnviar
+      );
       setRascunho('');
       setDetalhe((d) => (d ? { ...d, mensagens: [...d.mensagens, r.mensagem] } : d));
       if (r.agentePausado) {
@@ -239,12 +276,44 @@ export default function ConversasPage() {
     }
   };
 
-  const devolverAoAgente = async () => {
-    if (!selecionada) return;
-    await conversationsApi.resume(selecionada.channelId, selecionada.chatId).catch(() => null);
-    setSelecionada((c) => (c ? { ...c, status: 'WAITING_USER', pausedReason: null } : c));
-    carregar(busca || undefined, canalFiltro || undefined);
+  /**
+   * Liga e desliga o agente NESTA conversa.
+   *
+   * O interruptor do canal, em Conexoes, vale para todo mundo que escreve
+   * naquele numero. Este vale para uma pessoa so — e e o que a equipe precisa
+   * no dia a dia: assumir um atendimento sem tirar o agente dos outros.
+   */
+  const alternarAgente = async (ativar: boolean) => {
+    if (!selecionada || alternandoAgente) return;
+
+    setAlternandoAgente(true);
+    setErroEnvio(null);
+
+    // O estado muda na hora: um interruptor que so reage depois da resposta do
+    // servidor faz a pessoa clicar de novo achando que falhou.
+    const anterior = { status: selecionada.status, pausedReason: selecionada.pausedReason };
+    const otimista = ativar
+      ? { status: 'WAITING_USER', pausedReason: null }
+      : { status: 'PAUSED', pausedReason: 'atendimento_humano' };
+
+    setSelecionada((c) => (c ? { ...c, ...otimista } : c));
+    aplicarNaLista(selecionada.channelId, selecionada.chatId, otimista);
+
+    try {
+      const acao = ativar ? conversationsApi.resume : conversationsApi.pause;
+      await acao(selecionada.channelId, selecionada.chatId);
+    } catch (err) {
+      // Volta ao que era: deixar o interruptor mentindo sobre quem atende e
+      // pior do que nao ter interruptor.
+      setSelecionada((c) => (c ? { ...c, ...anterior } : c));
+      aplicarNaLista(selecionada.channelId, selecionada.chatId, anterior);
+      setErroEnvio(err instanceof Error ? err.message : 'Nao foi possivel alterar o agente.');
+    } finally {
+      setAlternandoAgente(false);
+    }
   };
+
+  const devolverAoAgente = () => alternarAgente(true);
 
   const excluir = async () => {
     if (!selecionada) return;
@@ -358,8 +427,29 @@ export default function ConversasPage() {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-sm font-medium text-cream">
-                          {c.nome || identificacao(c)}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {/*
+                            Quem responde esta pessoa, de relance. Sem isto, so
+                            se descobre abrindo a conversa — e uma carteira com
+                            dez atendimentos assumidos vira dez cliques para
+                            saber quais o agente ainda cobre.
+                          */}
+                          {c.status === 'PAUSED' || c.status === 'BOT_LOOP_DETECTED' ? (
+                            <UserCog
+                              size={12}
+                              className="shrink-0 text-amber-300"
+                              aria-label="Você responde esta pessoa"
+                            />
+                          ) : (
+                            <Bot
+                              size={12}
+                              className="shrink-0 text-emerald-400/70"
+                              aria-label="O agente responde esta pessoa"
+                            />
+                          )}
+                          <span className="truncate text-sm font-medium text-cream">
+                            {c.nome || identificacao(c)}
+                          </span>
                         </span>
                         <span className="shrink-0 text-[10px] text-navy-600">
                           {dataHora(c.updatedAt)}
@@ -431,6 +521,12 @@ export default function ConversasPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    <InterruptorDoAgente
+                      conversa={selecionada}
+                      ocupado={alternandoAgente}
+                      aoAlternar={alternarAgente}
+                    />
+
                     {confirmandoExclusao ? (
                       <>
                         <span className="text-xs text-red-300">Excluir tudo?</span>
@@ -507,22 +603,43 @@ export default function ConversasPage() {
                       selecionada.status === 'BOT_LOOP_DETECTED' ? (
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2">
                           <span className="text-[11px] text-amber-200">
-                            Agente pausado nesta conversa
-                            {selecionada.pausedReason ? ` (${selecionada.pausedReason})` : ''}. Você
-                            responde.
+                            Você responde esta pessoa
+                            {selecionada.pausedReason
+                              ? ` — ${motivoLegivel(selecionada.pausedReason)}`
+                              : ''}
+                            . As outras conversas seguem com o agente.
                           </span>
                           <button
                             onClick={devolverAoAgente}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-navy-700 px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-emerald-400/40 hover:text-emerald-300"
+                            disabled={alternandoAgente}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-navy-700 px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-emerald-400/40 hover:text-emerald-300 disabled:opacity-50"
                           >
                             <PlayCircle size={12} />
                             Devolver ao agente
                           </button>
                         </div>
                       ) : (
-                        <p className="mb-2 text-[11px] text-navy-600">
-                          Ao enviar, o agente é pausado nesta conversa para não responder junto.
-                        </p>
+                        /*
+                         * Assumir ao enviar e o comportamento certo por padrao —
+                         * pessoa e agente respondendo juntos confunde o contato.
+                         * Mas as vezes o atendente so quer complementar uma
+                         * informacao e devolver a conversa; sem esta opcao ele
+                         * teria de religar o agente logo depois, toda vez.
+                         */
+                        <label className="mb-2 flex cursor-pointer select-none items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={assumirAoEnviar}
+                            onChange={(e) => setAssumirAoEnviar(e.target.checked)}
+                            className="peer sr-only"
+                          />
+                          <span className="relative h-4 w-7 shrink-0 rounded-full bg-navy-800 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-3 after:w-3 after:rounded-full after:bg-muted after:transition-transform peer-checked:bg-amber-400/70 peer-checked:after:translate-x-3 peer-checked:after:bg-navy-950" />
+                          <span className="text-[11px] text-muted">
+                            {assumirAoEnviar
+                              ? 'Ao enviar, você assume esta conversa e o agente para de responder.'
+                              : 'Enviar sem assumir: o agente continua respondendo esta pessoa.'}
+                          </span>
+                        </label>
                       )}
 
                       {erroEnvio && (
@@ -771,5 +888,73 @@ function InformarNumero({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * O AGENTE ATENDE ESTA PESSOA?
+ * ----------------------------
+ * Interruptor por CONVERSA, sempre visivel no cabecalho.
+ *
+ * Ele ja existia, mas escondido: so aparecia depois que a conversa estava
+ * pausada, num aviso pequeno acima da caixa de texto. Quem assumia um
+ * atendimento e queria devolve-lo nao achava o caminho, e acabava no
+ * interruptor de Conexoes — que desliga o agente para TODO MUNDO daquele
+ * numero. O controle existia e a tela nao contava.
+ *
+ * O texto diz quem responde, nao o estado tecnico: "Voce atende" e o que
+ * importa saber antes de digitar.
+ */
+function InterruptorDoAgente({
+  conversa,
+  ocupado,
+  aoAlternar,
+}: {
+  conversa: ConversationSummary;
+  ocupado: boolean;
+  aoAlternar: (ativar: boolean) => void;
+}) {
+  const pausada = conversa.status === 'PAUSED' || conversa.status === 'BOT_LOOP_DETECTED';
+  const ativo = !pausada;
+
+  // Loop entre robos nao se desfaz sozinho: retomar precisa ser uma decisao.
+  const porLoop = conversa.status === 'BOT_LOOP_DETECTED';
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={ativo}
+      disabled={ocupado}
+      onClick={() => aoAlternar(pausada)}
+      title={
+        ativo
+          ? 'O agente responde esta pessoa. Clique para assumir voce.'
+          : 'Você responde esta pessoa. Clique para devolver ao agente.'
+      }
+      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${
+        ativo
+          ? 'border-emerald-400/30 bg-emerald-400/[0.07] text-emerald-200 hover:border-emerald-400/60'
+          : 'border-amber-400/30 bg-amber-400/[0.07] text-amber-200 hover:border-amber-400/60'
+      }`}
+    >
+      <span
+        className={`relative h-4 w-7 shrink-0 rounded-full transition-colors after:absolute after:top-0.5 after:h-3 after:w-3 after:rounded-full after:transition-transform ${
+          ativo
+            ? 'bg-emerald-400/70 after:left-0.5 after:translate-x-3 after:bg-navy-950'
+            : 'bg-navy-700 after:left-0.5 after:bg-muted'
+        }`}
+      />
+      {ocupado ? (
+        <Loader2 size={12} className="animate-spin" />
+      ) : ativo ? (
+        <Bot size={13} />
+      ) : (
+        <UserCog size={13} />
+      )}
+      <span className="whitespace-nowrap font-medium">
+        {ativo ? 'Agente atende' : porLoop ? 'Pausado (loop)' : 'Você atende'}
+      </span>
+    </button>
   );
 }

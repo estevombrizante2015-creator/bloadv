@@ -530,6 +530,37 @@ mostra o que continua sem.
 
 ---
 
+## Dois interruptores, dois alcances
+
+O agente pode ser desligado em dois lugares, e confundi-los é caro:
+
+| Onde | Alcance | Quando usar |
+|---|---|---|
+| **Conversas** → botão no cabeçalho | **uma pessoa** | assumir um atendimento sem tirar o agente dos outros |
+| **Conexões** → interruptor do cartão | **todas** as conversas daquele número | manutenção, fora do ar, desligar o número |
+
+O controle por pessoa sempre existiu no backend — `pause` filtra por
+`(sessionId, chatId)` — mas **a tela não o mostrava**: ele só aparecia depois
+que a conversa já estava pausada, num aviso pequeno acima da caixa de texto.
+Quem assumia um atendimento e queria devolvê-lo não achava o caminho e acabava
+no interruptor de Conexões, que desliga para todo mundo.
+
+Agora o cabeçalho da conversa diz **quem responde aquela pessoa** — *"Agente
+atende"* ou *"Você atende"* — e alterna com um clique. Na lista, um ícone por
+linha mostra o mesmo de relance: sem isso, uma carteira com dez atendimentos
+assumidos vira dez cliques para descobrir quais o agente ainda cobre.
+
+**Enviar assume a conversa** por padrão: pessoa e agente respondendo juntos
+confunde o contato. Mas há um interruptor ao lado da caixa de texto para enviar
+**sem** assumir — às vezes o atendente só quer complementar uma informação e
+devolver a conversa, e sem essa opção teria de religar o agente toda vez.
+
+Cinco testes travam o alcance, inspecionando o **filtro** da consulta em vez de
+um caso: é o filtro que define quem é atingido, e um `updateMany` acidental ali
+derrubaria o atendimento do escritório inteiro sem nada na tela denunciar.
+
+---
+
 ## Estado e idempotência
 
 [Conversation](backend/src/models/Conversation.js) guarda por conversa: `chatId`,
@@ -767,7 +798,7 @@ OpenAI. Áudio e imagem são processados em memória — nada de mídia é grava
 ## Testes
 
 ```bash
-cd backend && npm test    # 272 testes
+cd backend && npm test    # 277 testes
 ```
 
 Autenticação (hash, token, rotas protegidas) · agentes e resolução por número ·
