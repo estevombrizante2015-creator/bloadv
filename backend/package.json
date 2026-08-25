@@ -13,7 +13,8 @@
     "seed:knowledge": "node scripts/seed-knowledge.js",
     "simulate": "node scripts/simulate.js",
     "create:user": "node scripts/create-user.js",
-    "fix:lid": "node scripts/fix-lid.js"
+    "fix:lid": "node scripts/fix-lid.js",
+    "liberar": "node scripts/liberar-contato.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

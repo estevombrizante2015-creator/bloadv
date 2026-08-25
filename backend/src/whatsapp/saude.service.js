@@ -133,7 +133,7 @@ async function coletar(desde, desdeHistorico) {
           createdAt: { $gte: desde },
           channelId: { $ne: CANAL_TESTE },
           stage: 'input',
-          rule: { $in: ['orcamento_contato', 'orcamento_global', 'rate_limit'] },
+          rule: { $in: ['orcamento_contato', 'orcamento_global', 'rate_limit', 'handoff_humano_ativo'] },
         },
       },
       { $group: { _id: { channelId: '$channelId', rule: '$rule' }, total: { $sum: 1 } } },
@@ -325,6 +325,25 @@ function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, calad
         'O teto diario de tokens de TODA a operacao foi atingido: nenhum numero responde ate a ' +
           'virada do dia.',
         'Aumente GUARD_GLOBAL_DAILY_TOKEN_BUDGET ou verifique com o time tecnico o que consumiu o teto.'
+      )
+    );
+  }
+
+  /**
+   * Contatos marcados como "atendimento humano" que continuam escrevendo e nao
+   * recebem nada — nem do agente, nem de ninguem. So vira sinal quando NENHUMA
+   * pessoa do escritorio respondeu por este numero nas ultimas 24h: com alguem
+   * atendendo a mao, o silencio do agente e o comportamento correto.
+   */
+  if (calados.handoff_humano_ativo > 0 && volume.enviadasPorPessoa24h === 0) {
+    sinais.push(
+      sinal(
+        'critico',
+        `${calados.handoff_humano_ativo} mensagem(ns) sem resposta de ninguem`,
+        'Sao contatos marcados como atendimento humano: o agente fica calado por definicao, mas ' +
+          'nenhuma pessoa respondeu por este numero em 24h. Do lado de quem escreveu, o atendimento ' +
+          'simplesmente parou.',
+        'Abra as conversas pausadas e use Retomar para devolver o agente, ou assuma o atendimento.'
       )
     );
   }

@@ -190,3 +190,23 @@ test('caso simples e recente nao escala (controle de custo)', () => {
   });
   assert.equal(decision.tier, 'sol');
 });
+
+// ------------------------------------------------ handoff nao pode ser eterno
+
+test('retomar limpa o handoff do contato, e nao so a pausa da conversa', () => {
+  // O silencio do agente mora em dois documentos: Conversation.status e
+  // Contact.humanHandoff. O guardrail de entrada le o SEGUNDO antes de tudo e
+  // descarta a mensagem sem responder nada. Enquanto o resume limpava so o
+  // primeiro, "Retomar" dizia que funcionou e a pessoa seguia sem resposta.
+  const fonte = require('node:fs').readFileSync(
+    require.resolve('../src/conversation/conversation.service'),
+    'utf8'
+  );
+
+  const corpoDoResume = fonte.slice(fonte.indexOf('async function resume('));
+  assert.ok(/humanHandoff:\s*false/.test(corpoDoResume), 'resume precisa limpar humanHandoff');
+  assert.ok(
+    !/optedOut/.test(corpoDoResume.slice(0, corpoDoResume.indexOf('return conversation'))),
+    'opt-out e decisao do contato: retomar nao pode desfazer'
+  );
+});

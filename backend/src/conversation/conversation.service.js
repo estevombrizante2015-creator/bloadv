@@ -1,4 +1,4 @@
-const { Conversation, Message } = require('../models');
+const { Conversation, Message, Contact } = require('../models');
 const { jidToNumber, isLidJid, jidToIdentifier } = require('../config/agents.config');
 const lidResolver = require('../whatsapp/lid.resolver');
 const logger = require('../utils/logger');
@@ -103,9 +103,25 @@ async function pause(channelId, chatId, reason) {
   });
 }
 
-/** Retoma o atendimento: zera os contadores de suspeita junto. */
+/**
+ * Retoma o atendimento: zera os contadores de suspeita junto.
+ *
+ * E LIMPA O HANDOFF DO CONTATO. O silencio do agente mora em dois documentos
+ * diferentes — `Conversation.status` (pausada) e `Contact.humanHandoff` (o
+ * contato foi entregue a uma pessoa) — e o guardrail de entrada consulta o
+ * segundo ANTES de qualquer outra coisa, descartando a mensagem sem responder
+ * nada (input.guard: `handoff_humano_ativo`).
+ *
+ * Enquanto isto limpava so o primeiro, "Retomar" no painel devolvia a conversa
+ * ao estado normal e o agente continuava mudo, para sempre, sem log nenhum. O
+ * sintoma era o pior possivel: o botao dizia que funcionou e a pessoa do outro
+ * lado seguia sem resposta.
+ *
+ * `optedOut` NAO e limpo aqui de proposito: pedir para nao receber mensagem e
+ * decisao do contato, nao estado de atendimento.
+ */
 async function resume(channelId, chatId) {
-  return patch(channelId, chatId, {
+  const conversation = await patch(channelId, chatId, {
     status: Conversation.STATUS.WAITING_USER,
     pausedReason: null,
     pausedAt: null,
@@ -115,6 +131,20 @@ async function resume(channelId, chatId) {
     possibleBot: false,
     processing: false,
   });
+
+  try {
+    await Contact.updateOne(
+      { channelId, jid: chatId },
+      { $set: { humanHandoff: false, handoffReason: null } }
+    );
+  } catch (error) {
+    logger.warn(
+      { err: error.message, channelId, chatId },
+      'Conversa retomada, mas o handoff do contato nao foi limpo'
+    );
+  }
+
+  return conversation;
 }
 
 /**

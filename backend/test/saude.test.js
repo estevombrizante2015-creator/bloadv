@@ -161,3 +161,17 @@ test('teto global do dia e excesso de envios tambem ficam visiveis', () => {
   const rajada = saude.diagnosticar(cenario({ calados: { rate_limit: 2 } }));
   assert.equal(rajada.find((s) => /excesso de envios/i.test(s.titulo))?.nivel, 'atencao');
 });
+
+test('contato em handoff sem ninguem respondendo e critico', () => {
+  // O agente calado por handoff e correto — desde que alguem tenha assumido.
+  const ninguem = saude.diagnosticar(
+    cenario({ calados: { handoff_humano_ativo: 4 }, volume: { enviadasPorPessoa24h: 0 } })
+  );
+  assert.ok(ninguem.some((s) => s.nivel === 'critico' && /sem resposta de ninguem/i.test(s.titulo)));
+
+  // Com o escritorio atendendo a mao, nao ha o que alarmar.
+  const comAtendimento = saude.diagnosticar(
+    cenario({ calados: { handoff_humano_ativo: 4 }, volume: { enviadasPorPessoa24h: 6 } })
+  );
+  assert.ok(!comAtendimento.some((s) => /sem resposta de ninguem/i.test(s.titulo)));
+});

@@ -79,7 +79,22 @@ async function check({ channelId, jid, text, type, contact }) {
     return { allow: false, flags: ['opt_out_ativo'], silent: true };
   }
 
+  /**
+   * O contato foi entregue a uma pessoa do escritorio: o agente cala.
+   *
+   * O descarte e registrado — antes nao era. Sem registro, uma conversa que
+   * caiu aqui por acidente (um limite tecnico, um handoff automatico) ficava
+   * muda para sempre e nao aparecia em lugar nenhum: nem log, nem painel, nem
+   * metrica. E o handoff nao expira sozinho; so sai daqui por "Retomar".
+   */
   if (contact?.humanHandoff) {
+    await record({
+      ...ctx,
+      rule: 'handoff_humano_ativo',
+      severity: 'info',
+      action: 'silenciar',
+      excerpt: text,
+    });
     return { allow: false, flags: ['handoff_humano_ativo'], silent: true };
   }
 
