@@ -86,8 +86,27 @@ const env = {
     maxOutboundChars: int(process.env.GUARD_MAX_OUTBOUND_CHARS, 900),
     rateLimitMsgs: int(process.env.GUARD_RATE_LIMIT_MSGS, 12),
     rateLimitWindowMs: int(process.env.GUARD_RATE_LIMIT_WINDOW_MS, 60000),
-    dailyTokenBudget: int(process.env.GUARD_DAILY_TOKEN_BUDGET, 40000),
-    globalDailyTokenBudget: int(process.env.GUARD_GLOBAL_DAILY_TOKEN_BUDGET, 2000000),
+    /**
+     * SEM TETO DE TOKENS POR DIA (0 = ilimitado), por decisao do escritorio.
+     *
+     * O teto anterior (40 mil por contato) foi calibrado quando o prompt do
+     * agente tinha ~2,5 mil tokens. Com as instrucoes completas ele passou de 7
+     * mil, e cada turno custa perto de 8 mil somando resposta e extracao de
+     * ontologia: o limite virava cinco mensagens. Da sexta em diante o contato
+     * recebia "vou pedir para alguem do time continuar com voce" no meio da
+     * triagem, sem erro em lugar nenhum — o agente nem chegava a rodar.
+     *
+     * Um lead perdido custa mais que a diferenca de tokens, e um teto que
+     * interrompe a triagem no meio protege a conta errada. O controle de custo
+     * passa a ser o painel de custo da OpenAI (billing.service), que mostra o
+     * gasto real em dinheiro, e o rate limit por minuto, que continua valendo
+     * contra rajada e loop.
+     *
+     * Se um dia voltar a existir teto, o painel de saude ja denuncia quando ele
+     * cala o agente — ver whatsapp/saude.service.
+     */
+    dailyTokenBudget: int(process.env.GUARD_DAILY_TOKEN_BUDGET, 0),
+    globalDailyTokenBudget: int(process.env.GUARD_GLOBAL_DAILY_TOKEN_BUDGET, 0),
     allowedLinkDomains: list(process.env.GUARD_ALLOWED_LINK_DOMAINS, ['bloadv.com.br', 'wa.me']),
   },
 

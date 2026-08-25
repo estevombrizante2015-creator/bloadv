@@ -133,3 +133,44 @@ test('a limpeza preserva parenteses que fazem parte da frase', () => {
   assert.ok(texto.includes('(publicado no Diario Oficial)'));
   assert.ok(texto.includes('12.797'));
 });
+
+// -------------------------------------------- pergunta juridica geral (8.2)
+
+test('pergunta sobre a regra geral dispara busca; pergunta sobre o caso, nao', () => {
+  delete require.cache[require.resolve('../src/agent/websearch.service')];
+  const servico = require('../src/agent/websearch.service');
+
+  // Sao perguntas sobre o que a lei e os tribunais dizem HOJE. Respondidas so
+  // com a base local, saem com o verbete curado meses atras.
+  const geral = [
+    'quais as causas de rescisao indireta do contrato de trabalho?',
+    'o que caracteriza justa causa?',
+    'quais os requisitos da estabilidade da gestante?',
+    'existe sumula do TST sobre intervalo?',
+    'qual o piso da categoria dos vigilantes em Campinas?',
+    'qual a convencao coletiva aplicavel ao comercio?',
+  ];
+  for (const t of geral) {
+    assert.equal(servico.deveBuscar(t).buscar, true, `deveria buscar: ${t}`);
+  }
+
+  // A mesma materia, perguntada sobre a propria situacao, continua fora: isso
+  // e analise do caso concreto e quem faz e o advogado, com os documentos.
+  const doCaso = [
+    'tenho direito a rescisao indireta no meu caso?',
+    'meu chefe me humilhava todos os dias',
+    'fui demitido ontem e nao recebi nada',
+  ];
+  for (const t of doCaso) {
+    assert.equal(servico.deveBuscar(t).buscar, false, `nao deveria buscar: ${t}`);
+  }
+});
+
+test('relato que apenas menciona um instituto nao vira pesquisa', () => {
+  const servico = require('../src/agent/websearch.service');
+
+  // Sem pergunta, e um caso sendo contado - nao um ponto de direito a conferir.
+  for (const t of ['recebi justa causa ontem', 'trabalhei 3 anos sem carteira assinada']) {
+    assert.equal(servico.deveBuscar(t).buscar, false, `nao deveria buscar: ${t}`);
+  }
+});

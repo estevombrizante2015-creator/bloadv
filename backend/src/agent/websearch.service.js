@@ -44,12 +44,46 @@ const GATILHOS = [
   /\b(mudou|mudan[cç]a|nova regra|nova lei|entrou em vigor|reforma)\b.{0,30}\b(trabalhista|clt|inss|fgts)\b/i,
   // orgaos e servicos publicos
   /\b(endere[cç]o|telefone|hor[aá]rio|agendamento)\b.{0,30}\b(inss|caixa|minist[eé]rio do trabalho|superintend[eê]ncia|trt|justi[cç]a do trabalho)\b/i,
+
+  /**
+   * PERGUNTA JURIDICA GERAL (secao 8.2 das instrucoes do escritorio)
+   * ----------------------------------------------------------------
+   * "Quais as causas de rescisao indireta?" nao pede um valor que muda — pede
+   * o que a lei e os tribunais dizem hoje. Ate aqui isso nao disparava nada, e
+   * o agente respondia so com a base local: verbete curado meses atras, sem
+   * saber se mudou.
+   *
+   * O gatilho exige INSTITUTO + FORMULACAO DE PERGUNTA. Um relato que apenas
+   * menciona "justa causa" ("recebi justa causa ontem") nao dispara: nao ha
+   * pergunta ali, ha um caso — e caso e do advogado, nao da internet.
+   *
+   * Perguntas sobre o proprio caso continuam bloqueadas logo abaixo, em
+   * BLOQUEIOS: a busca serve para a regra geral, nunca para concluir sobre a
+   * situacao de quem escreve.
+   */
+  /\b(quais|quando|como|o que|em que|cabe|existe|requisito|hip[oó]tese|caracteriza|configura|regra|prev[eê])\b[\s\S]{0,80}\b(rescis[aã]o indireta|justa causa|estabilidade|gestante|insalubridade|periculosidade|aviso pr[eé]vio|horas? extras?|adicional noturno|equipara[cç][aã]o salarial|ac[uú]mulo de fun[cç][aã]o|desvio de fun[cç][aã]o|ass[eé]dio|dano moral|v[ií]nculo empregat[ií]cio|banco de horas|intervalo intrajornada|abandono de emprego|dispensa discriminat[oó]ria)\b/i,
+  /\b(rescis[aã]o indireta|justa causa|estabilidade|insalubridade|periculosidade|equipara[cç][aã]o salarial|ass[eé]dio moral|ass[eé]dio sexual|v[ií]nculo empregat[ií]cio)\b[\s\S]{0,80}\b(quais|causas|hip[oó]teses|requisitos|caracteriza|configura|cabe|regra|lei|artigo|s[uú]mula|prazo)\b/i,
+
+  // Sumula, precedente e jurisprudencia: mudam sem aviso e por isso valem consulta.
+  /\b(s[uú]mula|precedente|tema repetitivo|jurisprud[eê]ncia|entendimento do tst|decis[aã]o do (tst|stf|stj))\b/i,
+
+  // Norma coletiva e dados publicos da empresa (secoes 8.2 e 8.6).
+  /\b(conven[cç][aã]o coletiva|acordo coletivo|diss[ií]dio|norma coletiva|piso da categoria|piso da minha categoria)\b/i,
+  /\b(cnpj|raz[aã]o social)\b/i,
 ];
 
-/** Nunca busca: sao perguntas sobre o caso da pessoa, nao sobre um dado. */
+/**
+ * Nunca busca: sao perguntas sobre o caso da pessoa, nao sobre um dado.
+ *
+ * Vale mais que os gatilhos. Com a pergunta juridica geral agora disparando
+ * busca, esta lista e o que separa "quais as causas de rescisao indireta" (a
+ * regra, pesquisavel) de "tenho direito a rescisao indireta?" (o caso dela,
+ * que so o advogado avalia com os documentos).
+ */
 const BLOQUEIOS = [
   /\b(meu caso|minha situa[cç][aã]o|eu tenho direito|vou ganhar|quanto vou receber)\b/i,
   /\b(honor[aá]rio|quanto voc[eê]s cobram)\b/i,
+  /\b(no meu caso|comigo|na minha empresa|meu chefe|meu patr[aã]o|fui demitid|me demiti)\b/i,
 ];
 
 /**

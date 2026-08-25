@@ -23,6 +23,7 @@ const cenario = (over = {}) => ({
   volume: { recebidas24h: 12, enviadas24h: 12, ultimaRecebidaEm: new Date(), ...(over.volume || {}) },
   corrida: { execucoes: 12, falhas: 0, latenciaMediaMs: 3200, ...(over.corrida || {}) },
   pausadas: over.pausadas ?? 0,
+  calados: over.calados ?? {},
   bloqueios: over.bloqueios ?? 0,
   erro: over.erro ?? null,
 });
@@ -138,4 +139,25 @@ test('todo sinal traz titulo e explicacao legiveis', () => {
     assert.ok(saude.PESO[s.nivel] !== undefined, `nivel desconhecido: ${s.nivel}`);
     assert.ok(s.titulo && s.detalhe, `sinal incompleto: ${JSON.stringify(s)}`);
   }
+});
+
+// ------------------------------------------- agente calado por limite interno
+
+test('mensagem sem resposta por orcamento do contato aparece como critico', () => {
+  // O modo de falha mais caro do sistema por ser silencioso: o contato recebe
+  // "vou pedir para alguem do time continuar com voce", a conversa morre, e o
+  // painel segue verde porque o numero esta conectado e o agente ligado.
+  const sinais = saude.diagnosticar(cenario({ calados: { orcamento_contato: 3 } }));
+  const achado = sinais.find((s) => /orcamento do contato/i.test(s.titulo));
+
+  assert.equal(achado?.nivel, 'critico');
+  assert.match(achado.comoResolver, /GUARD_DAILY_TOKEN_BUDGET/);
+});
+
+test('teto global do dia e excesso de envios tambem ficam visiveis', () => {
+  const global = saude.diagnosticar(cenario({ calados: { orcamento_global: 1 } }));
+  assert.equal(global.find((s) => /orcamento do dia/i.test(s.titulo))?.nivel, 'critico');
+
+  const rajada = saude.diagnosticar(cenario({ calados: { rate_limit: 2 } }));
+  assert.equal(rajada.find((s) => /excesso de envios/i.test(s.titulo))?.nivel, 'atencao');
 });

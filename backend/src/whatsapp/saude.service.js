@@ -68,7 +68,7 @@ const pior = (sinais) =>
  * nada em 7 dias, o painel diz exatamente isso.
  */
 async function coletar(desde, desdeHistorico) {
-  const [docs, mensagens, execucoes, pausadas, guardrails] = await Promise.all([
+  const [docs, mensagens, execucoes, pausadas, guardrails, limites] = await Promise.all([
     Channel.find().lean(),
 
     Message.aggregate([
@@ -115,9 +115,32 @@ async function coletar(desde, desdeHistorico) {
       { $match: { createdAt: { $gte: desde }, channelId: { $ne: CANAL_TESTE }, action: 'fallback' } },
       { $group: { _id: '$channelId', total: { $sum: 1 } } },
     ]),
+
+    /**
+     * Mensagens em que o agente foi CALADO por um limite de protecao, antes de
+     * chegar a rodar: orcamento de tokens do contato, orcamento global do dia,
+     * rate limit.
+     *
+     * Era o unico modo de falha completamente invisivel do sistema. O contato
+     * recebe "vou pedir para alguem do time continuar com voce" e a conversa
+     * morre ali; no painel, o numero segue conectado, verde, com o agente
+     * ligado. Foi assim que uma pergunta perfeitamente atendivel virou um
+     * atendimento perdido sem que ninguem soubesse por que.
+     */
+    GuardrailEvent.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: desde },
+          channelId: { $ne: CANAL_TESTE },
+          stage: 'input',
+          rule: { $in: ['orcamento_contato', 'orcamento_global', 'rate_limit'] },
+        },
+      },
+      { $group: { _id: { channelId: '$channelId', rule: '$rule' }, total: { $sum: 1 } } },
+    ]),
   ]);
 
-  return { docs, mensagens, execucoes, pausadas, guardrails };
+  return { docs, mensagens, execucoes, pausadas, guardrails, limites };
 }
 
 /** Texto do ultimo erro do agente, buscado so nos canais que de fato falharam. */
@@ -138,7 +161,7 @@ async function ultimoErro(channelId, desde) {
  * agir. Cada sinal responde tres coisas: o que esta acontecendo, por que isso
  * importa e o que fazer. Sinal sem a terceira parte e so barulho.
  */
-function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, erro }) {
+function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, calados = {}, erro }) {
   const sinais = [];
   const conectado = estado.status === 'connected';
   const temCredenciais = Boolean(estado.hasCredentials);
@@ -276,6 +299,48 @@ function diagnosticar({ estado, doc, volume, corrida, pausadas, bloqueios, erro 
     );
   }
 
+  /**
+   * O agente foi calado por um limite de protecao ANTES de rodar. Para quem
+   * escreveu, a conversa acabou ali; para o painel, o numero continuava
+   * saudavel. E o modo de falha mais caro justamente por ser silencioso.
+   */
+  if (calados.orcamento_contato > 0) {
+    sinais.push(
+      sinal(
+        'critico',
+        `${calados.orcamento_contato} mensagem(ns) sem resposta por orcamento do contato`,
+        'O limite diario de tokens por contato foi atingido e o agente parou de responder essas ' +
+          'pessoas — elas receberam apenas o aviso de que alguem do time continuaria o atendimento.',
+        'Aumente GUARD_DAILY_TOKEN_BUDGET. Como referencia: com as instrucoes atuais, cada resposta ' +
+          'custa cerca de 8 mil tokens, entao uma triagem inteira nao cabe em 40 mil.'
+      )
+    );
+  }
+
+  if (calados.orcamento_global > 0) {
+    sinais.push(
+      sinal(
+        'critico',
+        `${calados.orcamento_global} mensagem(ns) sem resposta por orcamento do dia`,
+        'O teto diario de tokens de TODA a operacao foi atingido: nenhum numero responde ate a ' +
+          'virada do dia.',
+        'Aumente GUARD_GLOBAL_DAILY_TOKEN_BUDGET ou verifique com o time tecnico o que consumiu o teto.'
+      )
+    );
+  }
+
+  if (calados.rate_limit > 0) {
+    sinais.push(
+      sinal(
+        'atencao',
+        `${calados.rate_limit} mensagem(ns) silenciadas por excesso de envios`,
+        'Protecao contra rajada de mensagens do mesmo contato. Ocasional e normal; repetido pode ' +
+          'ser alguem escrevendo muitas linhas seguidas e ficando sem resposta.',
+        'Se acontecer com frequencia, reveja GUARD_RATE_LIMIT_MSGS e a janela do buffer.'
+      )
+    );
+  }
+
   if (pausadas > 0) {
     sinais.push(
       sinal(
@@ -338,12 +403,23 @@ async function avaliar(estados) {
   const desde = new Date(agora - JANELA_MS);
   const desdeHistorico = new Date(agora - HISTORICO_MS);
 
-  const { docs, mensagens, execucoes, pausadas, guardrails } = await coletar(desde, desdeHistorico);
+  const { docs, mensagens, execucoes, pausadas, guardrails, limites } = await coletar(
+    desde,
+    desdeHistorico
+  );
 
   const porCanal = Object.fromEntries(docs.map((d) => [d.channelId, d]));
   const porPausa = Object.fromEntries(pausadas.map((p) => [p._id, p.total]));
   const porBloqueio = Object.fromEntries(guardrails.map((g) => [g._id, g.total]));
   const porCorrida = Object.fromEntries(execucoes.map((e) => [e._id, e]));
+
+  /** channelId -> { orcamento_contato: n, rate_limit: n, ... } */
+  const porCalado = {};
+  for (const linha of limites) {
+    const { channelId, rule } = linha._id;
+    porCalado[channelId] = porCalado[channelId] || {};
+    porCalado[channelId][rule] = linha.total;
+  }
 
   const porMensagem = {};
   for (const linha of mensagens) {
@@ -383,6 +459,7 @@ async function avaliar(estados) {
       corrida,
       pausadas: porPausa[estado.id] || 0,
       bloqueios: porBloqueio[estado.id] || 0,
+      calados: porCalado[estado.id] || {},
       erro,
     });
 
@@ -427,6 +504,8 @@ async function avaliar(estados) {
       },
       conversasPausadas: porPausa[estado.id] || 0,
       respostasBloqueadas24h: porBloqueio[estado.id] || 0,
+      // Mensagens que nem chegaram ao agente, por limite de protecao.
+      caladasPorLimite24h: Object.values(porCalado[estado.id] || {}).reduce((a, b) => a + b, 0),
     });
   }
 
