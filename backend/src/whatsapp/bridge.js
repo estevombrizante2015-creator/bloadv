@@ -6,6 +6,7 @@ const antiloop = require('../guardrails/antiloop.service');
 const businessHours = require('../conversation/business-hours');
 const agentService = require('../agent/agent.service');
 const { getChannel } = require('../config/channels');
+const { FALLBACK_AGENT_ID } = require('../config/agents.config');
 const { env } = require('../config/env');
 const curadoria = require('../curadoria/config.service');
 const clienteService = require('../clientes/cliente.service');
@@ -64,6 +65,132 @@ function registerBridge(io) {
 
   // ------------------------------------------------ entrada de mensagens
 
+  /**
+   * Por que o agente NAO vai responder — ou null, se vai.
+   *
+   * A decisao esta separada do registro de proposito. Quando o agente esta
+   * calado (standby, canal desligado, atendente no comando, fora do
+   * expediente) o que para e a RESPOSTA automatica; a mensagem do contato
+   * continua sendo gravada e pintada no painel. Sem essa separacao, assumir
+   * uma conversa cega o atendente: ele escreve, o cliente responde no
+   * WhatsApp e a tela nao mostra nada.
+   */
+  function motivoParaCalar({ agentId, channelDoc, conversation, expediente }) {
+    if (!curadoria.estaAtivo(agentId)) return 'agente_em_standby';
+    if (channelDoc && channelDoc.agentEnabled === false) return 'agente_desligado_no_canal';
+    if (conversationService.isPaused(conversation)) {
+      return conversation.status === Conversation.STATUS.BOT_LOOP_DETECTED
+        ? 'loop_de_bot'
+        : conversation.pausedReason || 'atendimento_humano';
+    }
+    if (!expediente.dentro) return `fora_expediente:${expediente.motivo}`;
+    return null;
+  }
+
+  /** O painel precisa da mensagem inteira para pintar a bolha na hora. */
+  function emitirEntrada({ channelId, jid, pushName, part, waMessageId }) {
+    realtime.conversationMessage({
+      channelId,
+      chatId: jid,
+      pushName,
+      mensagem: {
+        id: `wa-${waMessageId || part.timestamp}`,
+        direcao: 'in',
+        tipo: part.type,
+        texto: part.content || null,
+        transcricao: part.transcription || null,
+        descricaoImagem: part.description || null,
+        legenda: part.caption || null,
+        erroMidia: part.error || null,
+        autor: 'contact',
+        tokens: 0,
+        em: new Date(part.timestamp).toISOString(),
+      },
+    });
+  }
+
+  /** Alimenta a ficha operacional com o que acabou de chegar. */
+  function alimentarFicha({ phoneNumber, pushName, channelId, jid, texto }) {
+    // Sem telefone nao ha ficha. Um chat por LID cujo numero ainda nao
+    // apareceu criaria um cliente sem identidade, que duplicaria assim que o
+    // telefone surgisse — melhor esperar a proxima mensagem.
+    if (!phoneNumber) return;
+    clienteService
+      .registrarInteracao({
+        telefone: phoneNumber,
+        nome: pushName,
+        channelId,
+        chatId: jid,
+        direcao: 'in',
+        texto,
+      })
+      .catch((error) =>
+        logger.warn({ err: error.message, channelId }, 'Falha ao atualizar a ficha do cliente')
+      );
+  }
+
+  /**
+   * Grava e mostra a mensagem que chegou, SEM acionar o agente.
+   *
+   * Grava pelo mesmo `persistParts` do agente: e o que garante que a conversa
+   * conduzida a mao fique com o mesmo formato no banco — e portanto no
+   * historico, no resumo por IA e no contexto de quando o agente voltar.
+   */
+  async function registrarSemResponder({ channelId, jid, msg, pushName, phoneNumber, agent, curada, motivo, waMessageId }) {
+    // Em loop de bot ninguem esta lendo e a outra ponta e suspeita de ser
+    // automatica: registra o que chegou, mas nao paga Whisper nem visao.
+    const interpretar = motivo !== 'loop_de_bot';
+
+    const part = await normalizer.normalize({
+      msg,
+      channelId,
+      chatId: jid,
+      sock: manager.socketFor(channelId),
+      conversationHint: await conversationService.recentHint(channelId, jid),
+      midia: {
+        audio: interpretar && curada.audio?.habilitado,
+        imagem: interpretar && curada.imagem?.habilitado,
+      },
+    });
+
+    if (!part) return null;
+
+    const contact = await agentService.getOrCreateContact({
+      channelId,
+      jid,
+      role: agent.role,
+      pushName,
+    });
+    await agentService.persistParts({
+      channelId,
+      jid,
+      parts: [part],
+      batchId: agentService.newBatchId(),
+      startSeq: contact.messageCount + 1,
+    });
+    contact.messageCount += 1;
+    contact.lastMessageAt = new Date();
+    await contact.save();
+
+    await conversationService.patch(channelId, jid, { lastUserMessageAt: new Date() });
+
+    emitirEntrada({ channelId, jid, pushName, part, waMessageId });
+
+    // Numero nao cadastrado cai no agente `unassigned`: registrar a conversa
+    // ajuda a equipe a ver o que chegou, abrir ficha de cliente nao.
+    if (agent.id !== FALLBACK_AGENT_ID) {
+      alimentarFicha({
+        phoneNumber,
+        pushName,
+        channelId,
+        jid,
+        texto: part.content || part.transcription || part.caption || null,
+      });
+    }
+
+    return part;
+  }
+
   manager.onMessage = async (payload) => {
     const { channelId, jid, msg, pushName, waMessageId, verifiedBizName, phoneNumber } = payload;
     const channel = getChannel(channelId);
@@ -73,30 +200,8 @@ function registerBridge(io) {
     const agent = manager.agentFor(channelId);
     if (!agent) return;
 
-    // Ativo/standby vem da curadoria: e uma decisao operacional, e a equipe
-    // precisa poder tomar sem deploy. O agents.config segue como cadastro base.
-    if (!curadoria.estaAtivo(agent.id)) {
-      logger.info(
-        {
-          ev: EV.AGENT_STANDBY_SKIPPED,
-          channelId,
-          chatId: jid,
-          agentId: agent.id,
-          status: curadoria.statusEfetivo(agent.id),
-        },
-        'Agente em standby; mensagem registrada mas nao respondida'
-      );
-      return;
-    }
-
     const curada = curadoria.publicada(agent.id);
-
-    // --- interruptor manual do canal ---
     const channelDoc = await Channel.findOne({ channelId }).lean();
-    if (channelDoc && channelDoc.agentEnabled === false) {
-      logger.info({ channelId, chatId: jid }, 'Agente desligado neste canal; ignorando');
-      return;
-    }
 
     // --- idempotencia ---
     if (!(await claimMessage({ channelId, waMessageId, chatId: jid }))) {
@@ -118,44 +223,57 @@ function registerBridge(io) {
       phoneNumber,
     });
 
-    if (conversationService.isPaused(conversation)) {
-      logger.info(
-        { ev: EV.AGENT_PAUSED, channelId, chatId: jid, reason: conversation.pausedReason },
-        'Conversa pausada; nao processando'
-      );
-      await markProcessed(channelId, [waMessageId], 'ignored', conversation.pausedReason);
-      return;
-    }
-
-    // --- horario de atendimento ---
-    // A mensagem NAO se perde: ela e recebida, registrada e o contato recebe
-    // um aviso. O que nao acontece e o agente conduzir atendimento de madrugada.
     const expediente = businessHours.estaNoExpediente();
-    if (!expediente.dentro) {
-      const horas = env.expediente.avisoACadaHoras;
-      const ultimo = conversation.lastAwayNoticeAt?.getTime?.() || 0;
-      const jaAvisou = Date.now() - ultimo < horas * 60 * 60 * 1000;
+    const calado = motivoParaCalar({ agentId: agent.id, channelDoc, conversation, expediente });
+
+    if (calado) {
+      // Fora do expediente o contato ainda recebe um aviso — o que nao
+      // acontece e o agente conduzir atendimento de madrugada.
+      if (calado.startsWith('fora_expediente')) {
+        const horas = env.expediente.avisoACadaHoras;
+        const ultimo = conversation.lastAwayNoticeAt?.getTime?.() || 0;
+        const jaAvisou = Date.now() - ultimo < horas * 60 * 60 * 1000;
+
+        if (!jaAvisou) {
+          await manager
+            .sendText(
+              channelId,
+              jid,
+              businessHours.mensagemAusencia(expediente, curada.mensagens?.fora_do_horario)
+            )
+            .catch((error) => logger.warn({ err: error.message }, 'Falha ao avisar ausencia'));
+          await conversationService.patch(channelId, jid, { lastAwayNoticeAt: new Date() });
+        }
+      }
 
       logger.info(
         {
-          ev: EV.FORA_DO_EXPEDIENTE,
+          ev:
+            calado === 'agente_em_standby'
+              ? EV.AGENT_STANDBY_SKIPPED
+              : calado.startsWith('fora_expediente')
+                ? EV.FORA_DO_EXPEDIENTE
+                : EV.AGENT_PAUSED,
           channelId,
           chatId: jid,
-          hora: expediente.hora,
-          motivo: expediente.motivo,
-          avisoEnviado: !jaAvisou,
+          agentId: agent.id,
+          motivo: calado,
         },
-        'Mensagem recebida fora do expediente'
+        'Agente calado; mensagem registrada e exibida no painel'
       );
 
-      if (!jaAvisou) {
-        await manager
-          .sendText(channelId, jid, businessHours.mensagemAusencia(expediente, curada.mensagens?.fora_do_horario))
-          .catch((error) => logger.warn({ err: error.message }, 'Falha ao avisar ausencia'));
-        await conversationService.patch(channelId, jid, { lastAwayNoticeAt: new Date() });
-      }
-
-      await markProcessed(channelId, [waMessageId], 'ignored', `fora_expediente:${expediente.motivo}`);
+      await registrarSemResponder({
+        channelId,
+        jid,
+        msg,
+        pushName,
+        phoneNumber,
+        agent,
+        curada,
+        motivo: calado,
+        waMessageId,
+      });
+      await markProcessed(channelId, [waMessageId], 'ignored', calado);
       return;
     }
 
@@ -201,25 +319,7 @@ function registerBridge(io) {
       return;
     }
 
-    // O painel precisa da mensagem inteira para pintar a bolha na hora.
-    realtime.conversationMessage({
-      channelId,
-      chatId: jid,
-      pushName,
-      mensagem: {
-        id: `wa-${waMessageId || part.timestamp}`,
-        direcao: 'in',
-        tipo: part.type,
-        texto: part.content || null,
-        transcricao: part.transcription || null,
-        descricaoImagem: part.description || null,
-        legenda: part.caption || null,
-        erroMidia: part.error || null,
-        autor: 'contact',
-        tokens: 0,
-        em: new Date(part.timestamp).toISOString(),
-      },
-    });
+    emitirEntrada({ channelId, jid, pushName, part, waMessageId });
 
     // --- buffer: espera o contato terminar de falar ---
     buffer.add({
@@ -246,24 +346,13 @@ function registerBridge(io) {
 
     // A ficha operacional se alimenta sozinha: quem escreve entra na carteira
     // e a mensagem vira linha da timeline, sem ninguem digitar nada.
-    //
-    // Sem telefone nao ha ficha. Um chat por LID cujo numero ainda nao
-    // apareceu criaria um cliente sem identidade, que duplicaria assim que o
-    // telefone surgisse — melhor esperar a proxima mensagem.
-    if (phoneNumber) {
-      clienteService
-        .registrarInteracao({
-          telefone: phoneNumber,
-          nome: pushName,
-          channelId,
-          chatId: jid,
-          direcao: 'in',
-          texto: part.content || part.transcription || part.caption || null,
-        })
-        .catch((error) =>
-          logger.warn({ err: error.message, channelId }, 'Falha ao atualizar a ficha do cliente')
-        );
-    }
+    alimentarFicha({
+      phoneNumber,
+      pushName,
+      channelId,
+      jid,
+      texto: part.content || part.transcription || part.caption || null,
+    });
   };
 
   // ------------------------------------------------ saida: lote consolidado

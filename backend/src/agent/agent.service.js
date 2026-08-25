@@ -448,4 +448,14 @@ async function handleInbound({ channel, agent, jid, text, pushName, waMessageId 
   });
 }
 
-module.exports = { handleBatch, handleInbound, getOrCreateContact, recentMessages, newBatchId };
+module.exports = {
+  handleBatch,
+  handleInbound,
+  getOrCreateContact,
+  recentMessages,
+  newBatchId,
+  // A ponte grava a entrada por conta propria quando o agente nao vai
+  // responder. Reaproveitar esta funcao mantem UM formato de mensagem no
+  // banco: se o painel entende o que o agente grava, entende o resto.
+  persistParts,
+};

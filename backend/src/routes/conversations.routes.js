@@ -6,6 +6,7 @@ const {
   formatNumber,
   digitsOnly,
   jidToIdentifier,
+  jidToNumber,
   comDdiBrasil,
 } = require('../config/agents.config');
 const lidResolver = require('../whatsapp/lid.resolver');
@@ -215,10 +216,13 @@ async function conversationsRoutes(fastify) {
       return reply.code(502).send({ error: 'Nao foi possivel enviar pelo WhatsApp' });
     }
 
+    // `upsert`: quem escreve primeiro pelo painel, antes de o contato
+    // responder, tambem precisa de ficha de contato — senao a mensagem nasce
+    // com seq 0 e o historico embaralha.
     const contact = await Contact.findOneAndUpdate(
       { channelId, jid: chatId },
       { $inc: { messageCount: 1 } },
-      { new: true }
+      { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
     const mensagem = await Message.create({
@@ -242,6 +246,26 @@ async function conversationsRoutes(fastify) {
       { channelId, chatId, por: request.user?.email, pausouAgente: pauseAgent },
       'Mensagem enviada pelo painel'
     );
+
+    // A ficha do cliente registra o que o agente responde; o que o ATENDENTE
+    // responde tem de entrar pela mesma porta, senao a timeline mostra so
+    // metade da conversa a partir do momento em que alguem assume.
+    // `jidToNumber` devolve null para chat por LID: o identificador opaco nao e
+    // telefone, e abrir ficha com ele criaria um cliente fantasma.
+    const telefoneDoContato = jidToNumber(chatId) || lidResolver.resolver(chatId);
+    if (telefoneDoContato) {
+      clienteService
+        .registrarInteracao({
+          telefone: telefoneDoContato,
+          channelId,
+          chatId,
+          direcao: 'out',
+          texto,
+        })
+        .catch((error) =>
+          logger.warn({ err: error.message, channelId }, 'Falha ao atualizar a ficha do cliente')
+        );
+    }
 
     const payload = {
       id: mensagem._id.toString(),
