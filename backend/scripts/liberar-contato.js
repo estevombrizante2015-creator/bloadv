@@ -36,8 +36,16 @@ async function main() {
   const todos = process.argv.includes('--todos');
   const alvo = soDigitos(argumentos[0]);
 
+  /**
+   * O alvo pode vir como telefone ou como LID. Muitos chats do WhatsApp sao
+   * enderecados por `1234@lid` e o telefone real pode nem estar gravado —
+   * exigir o numero deixaria de fora justamente os contatos mais dificeis de
+   * achar no painel.
+   */
+  const bruto = argumentos[0] || '';
   const filtro = { humanHandoff: true, optedOut: { $ne: true } };
-  if (alvo) filtro.phoneNumber = alvo;
+  if (alvo && bruto.includes('@')) filtro.jid = bruto;
+  else if (alvo) filtro.$or = [{ phoneNumber: alvo }, { jid: new RegExp(`^${alvo}@`) }];
 
   const contatos = await Contact.find(filtro).lean();
   const pausadas = await Conversation.find({

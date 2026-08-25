@@ -71,6 +71,108 @@ const MOTIVO_LEGIVEL = {
 /** "fora_expediente:fim_do_dia" -> "fora_expediente" */
 const motivoBase = (reason) => String(reason || 'desconhecido').split(':')[0];
 
+/**
+ * RISCO DE PERDER O NUMERO
+ * ------------------------
+ * Pergunta diferente de "esta atendendo?": um numero pode atender muito bem
+ * hoje e estar sendo levado direto para o bloqueio. O WhatsApp nao avisa antes
+ * — o numero simplesmente para, e recuperar um numero que o escritorio divulga
+ * em anuncio custa muito mais que qualquer ajuste de configuracao.
+ *
+ * O que a conta olha e o que pesa de verdade numa conexao nao oficial:
+ *
+ *  1. PROPORCAO ENVIO/RECEPCAO. Quem so responde quem escreveu tem risco baixo,
+ *     por mais volume que tenha. Quem envia mais do que recebe parece disparo.
+ *  2. CONVERSAS INICIADAS PELO ESCRITORIO. E o fator mais pesado: falar com
+ *     quem nunca escreveu e o que gera denuncia, e denuncia e o que derruba.
+ *  3. VOLUME CONTRA IDADE DO NUMERO. Numero recem-pareado com volume alto e o
+ *     padrao classico de conta descartavel; o mesmo volume num numero antigo
+ *     nao chama atencao nenhuma.
+ *  4. QUEDAS E DESCONEXAO FORCADA. Sessao encerrada de fora e o sinal mais
+ *     concreto de que ja houve restricao.
+ *
+ * E ESTIMATIVA, e o painel diz isso. Nenhuma delas e informacao que o WhatsApp
+ * publique: sao os padroes que precedem bloqueio, medidos com o que temos.
+ */
+const RISCO_LABEL = { baixo: 'Risco baixo', medio: 'Risco medio', alto: 'Risco alto' };
+
+function avaliarRisco({ estado, doc, volume, conversas, agora = Date.now() }) {
+  const fatores = [];
+  let pontos = 0;
+
+  const marcar = (peso, texto) => {
+    pontos += peso;
+    fatores.push({ peso, texto });
+  };
+
+  const enviadas = volume.enviadas24h || 0;
+  const recebidas = volume.recebidas24h || 0;
+  const proporcao = enviadas / Math.max(recebidas, 1);
+
+  // 1. proporcao envio/recepcao
+  if (enviadas === 0) {
+    fatores.push({ peso: 0, texto: 'Nenhuma mensagem enviada nas ultimas 24h.' });
+  } else if (proporcao > 3) {
+    marcar(3, `Envia ${proporcao.toFixed(1)}x mais do que recebe (${enviadas} para ${recebidas}). Esse padrao e lido como disparo.`);
+  } else if (proporcao > 1.5) {
+    marcar(2, `Envia ${proporcao.toFixed(1)}x mais do que recebe (${enviadas} para ${recebidas}).`);
+  } else if (proporcao > 1.2) {
+    marcar(1, `Envia um pouco mais do que recebe (${enviadas} para ${recebidas}).`);
+  } else {
+    fatores.push({
+      peso: 0,
+      texto: `Responde mais do que envia (${enviadas} enviadas para ${recebidas} recebidas) — e o padrao mais seguro.`,
+    });
+  }
+
+  // 2. conversas iniciadas pelo escritorio
+  const total = conversas?.total || 0;
+  const nossas = conversas?.iniciadasPorNos || 0;
+  const fracao = total ? nossas / total : 0;
+
+  if (nossas === 0) {
+    fatores.push({ peso: 0, texto: 'Nenhuma conversa iniciada pelo escritorio nos ultimos 7 dias.' });
+  } else if (fracao > 0.5) {
+    marcar(4, `${nossas} de ${total} conversas comecaram por iniciativa do escritorio. Falar com quem nunca escreveu e o que mais gera denuncia.`);
+  } else if (fracao > 0.2) {
+    marcar(3, `${nossas} de ${total} conversas comecaram por iniciativa do escritorio.`);
+  } else {
+    marcar(1, `${nossas} de ${total} conversas comecaram por iniciativa do escritorio.`);
+  }
+
+  // 3. volume contra idade do numero
+  // `createdAt` e quando o CANAL entrou neste sistema, nao a idade da linha
+  // telefonica. Serve como piso: um canal registrado ontem disparando centenas
+  // de mensagens e suspeito de qualquer angulo. Nao serve para dizer "numero
+  // maduro", e por isso nunca reduz pontos — so acrescenta.
+  const nascimento = doc?.createdAt ? new Date(doc.createdAt).getTime() : null;
+  const dias = nascimento ? Math.max(1, Math.round((agora - nascimento) / 86_400_000)) : null;
+
+  if (dias !== null && dias < 7 && enviadas > 100) {
+    marcar(3, `Canal registrado ha ${dias} dia(s) e ja com ${enviadas} envios em 24h. Volume alto em numero recem-pareado e o padrao de conta descartavel.`);
+  } else if (dias !== null && dias < 30 && enviadas > 300) {
+    marcar(2, `Canal registrado ha ${dias} dias com ${enviadas} envios em 24h.`);
+  } else if (enviadas > 800) {
+    marcar(1, `${enviadas} envios em 24h. Volume alto mesmo para numero maduro.`);
+  } else if (dias !== null) {
+    fatores.push({
+      peso: 0,
+      texto: `Volume compativel com a operacao (${enviadas} envios em 24h).`,
+    });
+  }
+
+  // 4. quedas e desconexao forcada
+  if (estado.status === 'logged_out') {
+    marcar(4, 'A sessao foi encerrada de fora. Pode ter sido alguem no aparelho — ou restricao do WhatsApp.');
+  } else if (doc?.lastDisconnectedAt && agora - new Date(doc.lastDisconnectedAt).getTime() < JANELA_MS) {
+    marcar(1, 'Houve queda de conexao nas ultimas 24h.');
+  }
+
+  const nivel = pontos >= 5 ? 'alto' : pontos >= 3 ? 'medio' : 'baixo';
+
+  return { nivel, label: RISCO_LABEL[nivel], pontos, fatores };
+}
+
 const sinal = (nivel, titulo, detalhe, comoResolver = null) => ({
   nivel,
   titulo,
@@ -94,7 +196,8 @@ const pior = (sinais) =>
  * nada em 7 dias, o painel diz exatamente isso.
  */
 async function coletar(desde, desdeHistorico) {
-  const [docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas] = await Promise.all([
+  const [docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas, iniciadas] =
+    await Promise.all([
     Channel.find().lean(),
 
     Message.aggregate([
@@ -178,9 +281,34 @@ async function coletar(desde, desdeHistorico) {
       { $match: { createdAt: { $gte: desde }, status: 'ignored' } },
       { $group: { _id: { channelId: '$channelId', reason: '$reason' }, total: { $sum: 1 } } },
     ]),
+
+    /**
+     * Quem falou primeiro em cada conversa da semana.
+     *
+     * E o fator mais pesado do risco de bloqueio: responder quem procurou o
+     * escritorio e seguro em qualquer volume; escrever para quem nunca escreveu
+     * e o que gera denuncia — e denuncia e o que derruba um numero.
+     */
+    Message.aggregate([
+      { $match: { createdAt: { $gte: desdeHistorico } } },
+      { $sort: { createdAt: 1 } },
+      {
+        $group: {
+          _id: { channelId: '$channelId', jid: '$jid' },
+          primeira: { $first: '$direction' },
+        },
+      },
+      {
+        $group: {
+          _id: '$_id.channelId',
+          total: { $sum: 1 },
+          iniciadasPorNos: { $sum: { $cond: [{ $eq: ['$primeira', 'out'] }, 1, 0] } },
+        },
+      },
+    ]),
   ]);
 
-  return { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas };
+  return { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas, iniciadas };
 }
 
 /** Texto do ultimo erro do agente, buscado so nos canais que de fato falharam. */
@@ -354,27 +482,30 @@ function diagnosticar({
    * escreveu, a conversa acabou ali; para o painel, o numero continuava
    * saudavel. E o modo de falha mais caro justamente por ser silencioso.
    */
-  if (calados.orcamento_contato > 0) {
-    sinais.push(
-      sinal(
-        'critico',
-        `${calados.orcamento_contato} mensagem(ns) sem resposta por orcamento do contato`,
-        'O limite diario de tokens por contato foi atingido e o agente parou de responder essas ' +
-          'pessoas — elas receberam apenas o aviso de que alguem do time continuaria o atendimento.',
-        'Aumente GUARD_DAILY_TOKEN_BUDGET. Como referencia: com as instrucoes atuais, cada resposta ' +
-          'custa cerca de 8 mil tokens, entao uma triagem inteira nao cabe em 40 mil.'
-      )
-    );
-  }
+  /**
+   * Teto de tokens nao existe mais no codigo (ver guardrails/input.guard e
+   * config/env). Este sinal continua porque os eventos das ultimas 24h sao
+   * reais: enquanto o teto existiu, ele calou conversas inteiras, e o painel
+   * precisa explicar o silencio de ontem — nao so o de hoje.
+   *
+   * O handoff que ele deixou para tras NAO sai sozinho: e por isso que a acao
+   * aqui e retomar as conversas, e nao mexer em configuracao nenhuma.
+   */
+  const porTeto = (calados.orcamento_contato || 0) + (calados.orcamento_global || 0);
 
-  if (calados.orcamento_global > 0) {
+  if (porTeto > 0) {
     sinais.push(
       sinal(
-        'critico',
-        `${calados.orcamento_global} mensagem(ns) sem resposta por orcamento do dia`,
-        'O teto diario de tokens de TODA a operacao foi atingido: nenhum numero responde ate a ' +
-          'virada do dia.',
-        'Aumente GUARD_GLOBAL_DAILY_TOKEN_BUDGET ou verifique com o time tecnico o que consumiu o teto.'
+        // Nao e vermelho: o teto ja foi removido do sistema, entao isto e
+        // historico, nao problema em curso. Alarme sobre coisa resolvida e o
+        // jeito mais rapido de a equipe aprender a ignorar o painel.
+        'atencao',
+        `${porTeto} mensagem(ns) sem resposta por teto de tokens (ja removido)`,
+        'Um teto diario de tokens calou o agente para esses contatos: eles receberam apenas o aviso ' +
+          'de que alguem do time continuaria o atendimento, e a conversa parou ali. Esse teto foi ' +
+          'removido do sistema.',
+        'Retome as conversas afetadas: o contato marcado como atendimento humano continua mudo ate ' +
+          'alguem retomar, mesmo sem o teto.'
       )
     );
   }
@@ -507,7 +638,8 @@ async function avaliar(estados) {
   const desde = new Date(agora - JANELA_MS);
   const desdeHistorico = new Date(agora - HISTORICO_MS);
 
-  const { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas } = await coletar(
+  const { docs, mensagens, execucoes, pausadas, guardrails, limites, descartadas, iniciadas } =
+    await coletar(
     desde,
     desdeHistorico
   );
@@ -524,6 +656,9 @@ async function avaliar(estados) {
     porCalado[channelId] = porCalado[channelId] || {};
     porCalado[channelId][rule] = linha.total;
   }
+
+  /** channelId -> { total, iniciadasPorNos } nos ultimos 7 dias */
+  const porInicio = Object.fromEntries(iniciadas.map((i) => [i._id, i]));
 
   /** channelId -> { fora_expediente: n, atendimento_humano: n, ... } */
   const porDescarte = {};
@@ -616,6 +751,15 @@ async function avaliar(estados) {
         tokens: corrida.tokens,
         latenciaMediaMs: corrida.latenciaMediaMs,
       },
+      // Pergunta diferente de "esta atendendo?": este numero corre risco de
+      // ser bloqueado? Ver avaliarRisco.
+      risco: avaliarRisco({
+        estado,
+        doc,
+        volume,
+        conversas: porInicio[estado.id],
+        agora,
+      }),
       conversasPausadas: porPausa[estado.id] || 0,
       respostasBloqueadas24h: porBloqueio[estado.id] || 0,
       // Mensagens que nem chegaram ao agente, por limite de protecao.
@@ -638,4 +782,4 @@ async function avaliar(estados) {
   };
 }
 
-module.exports = { avaliar, diagnosticar, NIVEL_LABEL, LATENCIA_ALTA_MS, PESO };
+module.exports = { avaliar, diagnosticar, avaliarRisco, NIVEL_LABEL, RISCO_LABEL, LATENCIA_ALTA_MS, PESO };

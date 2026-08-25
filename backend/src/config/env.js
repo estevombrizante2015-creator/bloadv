@@ -79,6 +79,18 @@ const env = {
     // desconta o tempo que o modelo ja levou.
     minTypingMs: int(process.env.WA_MIN_TYPING_MS, 250),
     maxTypingMs: int(process.env.WA_MAX_TYPING_MS, 900),
+    /**
+     * Idade maxima de uma mensagem recuperada na reconexao.
+     *
+     * Quando a aplicacao cai ou reinicia, o WhatsApp guarda o que chegou e
+     * entrega tudo junto assim que o socket volta. Responder tem valor: quem
+     * escreveu ha vinte minutos ainda esta esperando. Responder a mensagem de
+     * anteontem, depois de uma queda longa, e pior que o silencio — a pessoa ja
+     * seguiu a vida e recebe um "pode me contar o que aconteceu?" do nada.
+     *
+     * Doze horas cobrem qualquer queda real de operacao e param antes disso.
+     */
+    maxOfflineAgeMs: int(process.env.WA_MAX_OFFLINE_AGE_MS, 12 * 60 * 60 * 1000),
   },
 
   guard: {
@@ -87,26 +99,21 @@ const env = {
     rateLimitMsgs: int(process.env.GUARD_RATE_LIMIT_MSGS, 12),
     rateLimitWindowMs: int(process.env.GUARD_RATE_LIMIT_WINDOW_MS, 60000),
     /**
-     * SEM TETO DE TOKENS POR DIA (0 = ilimitado), por decisao do escritorio.
+     * NAO EXISTE TETO DE TOKENS, e nao ha variavel para religa-lo.
      *
-     * O teto anterior (40 mil por contato) foi calibrado quando o prompt do
-     * agente tinha ~2,5 mil tokens. Com as instrucoes completas ele passou de 7
-     * mil, e cada turno custa perto de 8 mil somando resposta e extracao de
-     * ontologia: o limite virava cinco mensagens. Da sexta em diante o contato
-     * recebia "vou pedir para alguem do time continuar com voce" no meio da
-     * triagem, sem erro em lugar nenhum — o agente nem chegava a rodar.
+     * GUARD_DAILY_TOKEN_BUDGET e GUARD_GLOBAL_DAILY_TOKEN_BUDGET foram
+     * REMOVIDOS do codigo, nao zerados. Zerar deixava a alavanca no lugar: uma
+     * variavel esquecida em qualquer ambiente bastava para o agente parar de
+     * responder no meio de uma triagem, sem erro em lugar nenhum. Foi
+     * exatamente o que aconteceu em producao — um print de conversa custou 58
+     * mil tokens de leitura de imagem, derrubou o limite diario de uma pessoa
+     * em um unico turno, e as oito mensagens seguintes dela nao tiveram
+     * resposta nenhuma.
      *
-     * Um lead perdido custa mais que a diferenca de tokens, e um teto que
-     * interrompe a triagem no meio protege a conta errada. O controle de custo
-     * passa a ser o painel de custo da OpenAI (billing.service), que mostra o
-     * gasto real em dinheiro, e o rate limit por minuto, que continua valendo
-     * contra rajada e loop.
-     *
-     * Se um dia voltar a existir teto, o painel de saude ja denuncia quando ele
-     * cala o agente — ver whatsapp/saude.service.
+     * O gasto se acompanha pelo painel de custo da OpenAI (billing.service),
+     * em dinheiro. O que protege comportamento — rajada, loop de bot — e o
+     * rate limit por minuto, logo acima, e ele nao mede consumo.
      */
-    dailyTokenBudget: int(process.env.GUARD_DAILY_TOKEN_BUDGET, 0),
-    globalDailyTokenBudget: int(process.env.GUARD_GLOBAL_DAILY_TOKEN_BUDGET, 0),
     allowedLinkDomains: list(process.env.GUARD_ALLOWED_LINK_DOMAINS, ['bloadv.com.br', 'wa.me']),
   },
 

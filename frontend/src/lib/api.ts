@@ -73,7 +73,8 @@ export interface UsageReport {
   }>;
   guardrails: Array<{ _id: { stage: string; rule: string }; count: number }>;
   handoffs: number;
-  global: { day: string; tokens: number; limit: number };
+  // `limit: null` = sem teto. Nao existe mais teto de tokens no sistema.
+  global: { day: string; tokens: number; limit: number | null };
 }
 
 /** Sinaliza sessao expirada para o hook de auth redirecionar ao login. */
@@ -189,6 +190,17 @@ export interface SaudeCanal {
     falhas: number;
     tokens: number;
     latenciaMediaMs: number | null;
+  };
+  /**
+   * Risco de PERDER o numero — pergunta diferente de "esta atendendo?".
+   * O WhatsApp nao avisa antes de bloquear; isto e estimativa a partir dos
+   * padroes que precedem bloqueio. Ver backend/whatsapp/saude.service.
+   */
+  risco: {
+    nivel: 'baixo' | 'medio' | 'alto';
+    label: string;
+    pontos: number;
+    fatores: Array<{ peso: number; texto: string }>;
   };
   conversasPausadas: number;
   respostasBloqueadas24h: number;

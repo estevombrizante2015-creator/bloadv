@@ -72,6 +72,53 @@ function duracao(ms: number | null): string {
   return `${Math.floor(horas / 24)} dias`;
 }
 
+/**
+ * RISCO DE PERDER O NUMERO
+ * ------------------------
+ * Fica separado do "esta atendendo?" de propósito: um numero pode responder
+ * tudo hoje e estar a caminho do bloqueio. O WhatsApp nao avisa antes — quando
+ * avisa, o numero ja parou —, entao o painel mostra a tendencia enquanto ainda
+ * da tempo de corrigir a rotina de envio.
+ *
+ * Baixo fica discreto: farol verde piscando o dia inteiro ensina a ignorar o
+ * painel. Medio e alto ganham cor e abrem os fatores que pesaram.
+ */
+const RISCO: Record<'baixo' | 'medio' | 'alto', { borda: string; texto: string; ponto: string }> = {
+  baixo: { borda: 'border-navy-700', texto: 'text-muted', ponto: 'bg-emerald-400/70' },
+  medio: { borda: 'border-amber-400/40', texto: 'text-amber-300', ponto: 'bg-amber-400' },
+  alto: { borda: 'border-red-400/50', texto: 'text-red-300', ponto: 'bg-red-400' },
+};
+
+function SeloRisco({ risco }: { risco: SaudeCanal['risco'] }) {
+  if (!risco) return null;
+  const cor = RISCO[risco.nivel];
+  const pesados = risco.fatores.filter((f) => f.peso > 0);
+
+  return (
+    <div className={`mt-3 rounded-lg border ${cor.borda} px-2.5 py-2`}>
+      <p className={`flex items-center gap-1.5 text-[11px] font-semibold ${cor.texto}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${cor.ponto}`} />
+        {risco.label} de perder o numero
+      </p>
+
+      <ul className="mt-1 space-y-0.5">
+        {(pesados.length ? pesados : risco.fatores).slice(0, 3).map((fator, i) => (
+          <li key={i} className="text-[11px] leading-relaxed text-muted">
+            {fator.texto}
+          </li>
+        ))}
+      </ul>
+
+      {risco.nivel !== 'baixo' && (
+        <p className="mt-1.5 border-l-2 border-gold-500/30 pl-2.5 text-[11px] leading-relaxed text-parchment/70">
+          Responder quem procurou o escritorio e seguro em qualquer volume. O que derruba numero e
+          escrever para quem nunca escreveu.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function resumoSaude(relatorio: RelatorioSaude | null): string {
   if (!relatorio) return '—';
   const { critico, atencao, saudavel, inativo } = relatorio.resumo;
@@ -159,6 +206,8 @@ function CartaoSaude({ canal }: { canal: SaudeCanal }) {
           }
         />
       </div>
+
+      <SeloRisco risco={canal.risco} />
 
       <ul className="mt-3 space-y-2.5">
         {canal.sinais.map((sinal, i) => (

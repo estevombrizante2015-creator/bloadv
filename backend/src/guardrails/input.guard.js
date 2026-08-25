@@ -37,14 +37,11 @@ function addGlobalTokens(tokens) {
   globalUsage.tokens += tokens || 0;
 }
 
-function globalBudgetExceeded() {
-  const limit = env.guard.globalDailyTokenBudget;
-  if (!limit) return false;
-  if (globalUsage.day !== todayKey()) globalUsage = { day: todayKey(), tokens: 0 };
-  return globalUsage.tokens >= limit;
-}
-
-const getGlobalUsage = () => ({ ...globalUsage, limit: env.guard.globalDailyTokenBudget });
+/**
+ * Consumo do dia, para o painel. `limit: null` e explicito: a tela precisa
+ * dizer "sem teto", nao deixar em branco e parecer dado faltando.
+ */
+const getGlobalUsage = () => ({ ...globalUsage, limit: null });
 
 async function record({ channelId, jid, rule, severity, action, excerpt }) {
   try {
@@ -157,27 +154,21 @@ async function check({ channelId, jid, text, type, contact }) {
     return { allow: false, flags: ['rate_limit'], silent: true };
   }
 
-  if (globalBudgetExceeded()) {
-    await record({ ...ctx, rule: 'orcamento_global', severity: 'block', action: 'handoff' });
-    return {
-      allow: false,
-      handoff: 'orcamento_global_excedido',
-      flags: ['orcamento_global'],
-      reply: 'Recebi sua mensagem. Alguem do time vai te responder em instantes.',
-    };
-  }
-
-  const day = todayKey();
-  const usage = contact?.tokenUsage?.day === day ? contact.tokenUsage.tokens : 0;
-  if (env.guard.dailyTokenBudget && usage >= env.guard.dailyTokenBudget) {
-    await record({ ...ctx, rule: 'orcamento_contato', severity: 'block', action: 'handoff' });
-    return {
-      allow: false,
-      handoff: 'orcamento_contato_excedido',
-      flags: ['orcamento_contato'],
-      reply: 'Recebi sua mensagem. Vou pedir para alguem do time continuar com voce por aqui.',
-    };
-  }
+  /**
+   * NAO EXISTE TETO DE TOKENS. Nem por contato, nem por dia, nem por variavel
+   * de ambiente — o codigo nao tem mais onde ligar isso.
+   *
+   * O teto anterior interrompia a triagem no meio: um print de conversa custou
+   * 58 mil tokens de leitura de imagem e derrubou o limite diario de uma pessoa
+   * em UM turno. As oito mensagens seguintes dela ficaram sem resposta nenhuma,
+   * e a conversa terminou com um "muito obrigado" para um atendimento que nunca
+   * respondeu. Um lead perdido custa muito mais que a diferenca de tokens.
+   *
+   * O consumo continua contado e visivel (getGlobalUsage, tokenUsage do
+   * contato, painel de custo da OpenAI) — o que nao existe mais e algo que
+   * transforme consumo em silencio. Contra rajada e loop continua valendo o
+   * rate limit por minuto, que e protecao de comportamento, nao de gasto.
+   */
 
   if (rules.hasInjection(text)) {
     await record({ ...ctx, rule: 'prompt_injection', severity: 'warn', action: 'isolar', excerpt: text });
@@ -193,4 +184,4 @@ async function check({ channelId, jid, text, type, contact }) {
   return { allow: true, text: redacted, flags, injection: flags.includes('prompt_injection') };
 }
 
-module.exports = { check, addGlobalTokens, globalBudgetExceeded, getGlobalUsage, todayKey };
+module.exports = { check, addGlobalTokens, getGlobalUsage, todayKey };

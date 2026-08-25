@@ -485,7 +485,21 @@ class BaileysManager extends EventEmitter {
    * o Baileys nao conheca nada de OpenAI nem de regras de negocio.
    */
   async onMessagesUpsert(channelId, { messages, type }) {
-    if (type !== 'notify') return;
+    /**
+     * `notify` e mensagem chegando com a aplicacao no ar. `append` e o que o
+     * WhatsApp entrega na reconexao: tudo o que chegou enquanto o socket
+     * esteve fora.
+     *
+     * O `append` era descartado aqui, em silencio. Toda mensagem enviada
+     * durante um restart ou uma queda sumia por completo — sem resposta, sem
+     * registro no banco, sem bolha no painel. Para quem escreveu, o escritorio
+     * simplesmente ignorou; para quem opera, nunca existiu. Foi o que
+     * aconteceu com as mensagens de 25/08 durante o reinicio das 18h33.
+     *
+     * A idempotencia (ProcessedMessage) ja impede resposta dupla, e a idade
+     * maxima abaixo impede responder o que envelheceu demais.
+     */
+    if (type !== 'notify' && type !== 'append') return;
 
     for (const msg of messages) {
       try {
@@ -505,6 +519,39 @@ class BaileysManager extends EventEmitter {
         if (jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) continue;
         if (!env.wa.allowGroups && jid.endsWith('@g.us')) continue;
         if (!msg.message) continue;
+
+        const timestamp = Number(msg.messageTimestamp) * 1000 || Date.now();
+
+        // Recuperada da fila do WhatsApp apos uma queda. Vale responder o que
+        // ainda esta vivo; o que envelheceu demais so assusta quem recebe.
+        if (type === 'append') {
+          const idadeMs = Date.now() - timestamp;
+
+          if (idadeMs > env.wa.maxOfflineAgeMs) {
+            logger.warn(
+              {
+                ev: EV.MENSAGEM_OFFLINE_DESCARTADA,
+                channelId,
+                chatId: jid,
+                waMessageId: msg.key.id,
+                idadeHoras: Math.round(idadeMs / 3_600_000),
+              },
+              'Mensagem recuperada da fila e antiga demais para responder'
+            );
+            continue;
+          }
+
+          logger.info(
+            {
+              ev: EV.MENSAGEM_OFFLINE_RECUPERADA,
+              channelId,
+              chatId: jid,
+              waMessageId: msg.key.id,
+              idadeMinutos: Math.round(idadeMs / 60_000),
+            },
+            'Mensagem que chegou com a aplicacao fora do ar; processando agora'
+          );
+        }
 
         logger.info(
           {
@@ -538,7 +585,7 @@ class BaileysManager extends EventEmitter {
           // Nome verificado de conta Business. E so um dado - NAO bloqueia nada:
           // muita empresa legitima usa Business e perder esses leads seria pior.
           verifiedBizName: msg.verifiedBizName || null,
-          timestamp: Number(msg.messageTimestamp) * 1000 || Date.now(),
+          timestamp,
         };
 
         this.emit('message:in', payload);

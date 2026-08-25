@@ -144,23 +144,20 @@ test('todo sinal traz titulo e explicacao legiveis', () => {
 
 // ------------------------------------------- agente calado por limite interno
 
-test('mensagem sem resposta por orcamento do contato aparece como critico', () => {
-  // O modo de falha mais caro do sistema por ser silencioso: o contato recebe
-  // "vou pedir para alguem do time continuar com voce", a conversa morre, e o
-  // painel segue verde porque o numero esta conectado e o agente ligado.
-  const sinais = saude.diagnosticar(cenario({ calados: { orcamento_contato: 3 } }));
-  const achado = sinais.find((s) => /orcamento do contato/i.test(s.titulo));
+test("mensagem calada por teto de tokens continua explicada no painel", () => {
+  // O teto foi removido do codigo, mas os eventos das ultimas 24h sao reais: o
+  // painel precisa explicar o silencio de ontem, nao so o de hoje. E a acao e
+  // retomar a conversa — o handoff que o teto deixou nao sai sozinho.
+  const sinais = saude.diagnosticar(cenario({ calados: { orcamento_contato: 3, orcamento_global: 1 } }));
+  const achado = sinais.find((s) => /teto de tokens/i.test(s.titulo));
 
-  assert.equal(achado?.nivel, 'critico');
-  assert.match(achado.comoResolver, /GUARD_DAILY_TOKEN_BUDGET/);
-});
-
-test('teto global do dia e excesso de envios tambem ficam visiveis', () => {
-  const global = saude.diagnosticar(cenario({ calados: { orcamento_global: 1 } }));
-  assert.equal(global.find((s) => /orcamento do dia/i.test(s.titulo))?.nivel, 'critico');
-
-  const rajada = saude.diagnosticar(cenario({ calados: { rate_limit: 2 } }));
-  assert.equal(rajada.find((s) => /excesso de envios/i.test(s.titulo))?.nivel, 'atencao');
+  // Amarelo, nao vermelho: o teto ja foi removido do sistema, entao isto e
+  // historico. Alarme sobre coisa resolvida ensina a equipe a ignorar o painel.
+  assert.equal(achado?.nivel, "atencao");
+  assert.match(achado.titulo, /^4 /, "soma o teto do contato e o do dia");
+  assert.match(achado.titulo, /ja removido/i, "o titulo diz que nao vale mais");
+  assert.match(achado.comoResolver, /Retome/i);
+  assert.ok(!/GUARD_/.test(achado.comoResolver), "nao pode mandar mexer em variavel que nao existe");
 });
 
 test('contato em handoff sem ninguem respondendo e critico', () => {
@@ -195,4 +192,63 @@ test('o painel diz por que cada mensagem ficou sem resposta', () => {
   const noturno = expediente.find((s) => /sem resposta do agente/i.test(s.titulo));
   assert.equal(noturno?.nivel, 'saudavel');
   assert.match(noturno.detalhe, /UMA vez por periodo/, 'explica o silencio das seguintes');
+});
+
+test('rajada de mensagens silenciadas aparece como ressalva', () => {
+  // Rate limit e protecao de comportamento, nao de gasto: ocasional e normal,
+  // repetido e alguem escrevendo muitas linhas seguidas e ficando sem resposta.
+  const sinais = saude.diagnosticar(cenario({ calados: { rate_limit: 2 } }));
+  assert.equal(sinais.find((s) => /excesso de envios/i.test(s.titulo))?.nivel, 'atencao');
+});
+
+// -------------------------------------------- risco de perder o numero
+
+const risco = (over = {}) =>
+  saude.avaliarRisco({
+    estado: { status: 'connected', ...(over.estado || {}) },
+    doc: { createdAt: new Date(Date.now() - 45 * 86400000), ...(over.doc || {}) },
+    volume: { recebidas24h: 100, enviadas24h: 20, ...(over.volume || {}) },
+    conversas: { total: 40, iniciadasPorNos: 0, ...(over.conversas || {}) },
+  });
+
+test('numero que so responde tem risco baixo, por mais volume que tenha', () => {
+  // E o caso real do escritorio: 103 recebidas, 20 respondidas, nada iniciado
+  // por nos. Volume nao derruba numero; iniciativa derruba.
+  const r = risco({ volume: { recebidas24h: 1000, enviadas24h: 400 } });
+  assert.equal(r.nivel, 'baixo');
+  assert.equal(r.pontos, 0);
+  assert.ok(r.fatores.some((f) => /padrao mais seguro/i.test(f.texto)));
+});
+
+test('disparo para quem nunca escreveu leva o risco para alto', () => {
+  const r = risco({
+    volume: { recebidas24h: 10, enviadas24h: 120 },
+    conversas: { total: 60, iniciadasPorNos: 35 },
+  });
+  assert.equal(r.nivel, 'alto');
+  assert.ok(r.fatores.some((f) => f.peso >= 3 && /iniciativa do escritorio/i.test(f.texto)));
+});
+
+test('numero novo com volume alto pesa mais que numero maduro igual', () => {
+  const volume = { recebidas24h: 40, enviadas24h: 150 };
+  const conversas = { total: 50, iniciadasPorNos: 12 };
+
+  const novo = risco({ doc: { createdAt: new Date(Date.now() - 3 * 86400000) }, volume, conversas });
+  const maduro = risco({ volume, conversas });
+
+  assert.ok(novo.pontos > maduro.pontos, 'idade do numero muda a leitura do mesmo volume');
+  assert.ok(novo.fatores.some((f) => /conta descartavel/i.test(f.texto)));
+});
+
+test('sessao encerrada de fora e o sinal mais concreto de restricao', () => {
+  const r = risco({ estado: { status: 'logged_out' } });
+  assert.notEqual(r.nivel, 'baixo');
+  assert.ok(r.fatores.some((f) => f.peso >= 4 && /encerrada de fora/i.test(f.texto)));
+});
+
+test('todo fator explica o porque, mesmo quando nao pontua', () => {
+  for (const f of risco().fatores) {
+    assert.ok(f.texto.length > 20, `fator sem explicacao: ${JSON.stringify(f)}`);
+    assert.equal(typeof f.peso, 'number');
+  }
 });

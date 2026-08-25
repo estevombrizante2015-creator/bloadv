@@ -158,3 +158,54 @@ test('estado publico nunca vaza o socket nem credenciais', () => {
     'hasCredentials',
   ]);
 });
+
+// ------------------------------- mensagens que chegam com a aplicacao fora
+
+test('mensagem recuperada na reconexao e processada, nao descartada', async () => {
+  // O WhatsApp entrega como `append` tudo o que chegou enquanto o socket
+  // esteve fora. Isso era descartado em silencio: sem resposta, sem registro,
+  // sem bolha no painel. Toda mensagem enviada durante um restart sumia.
+  const manager = new BaileysManager();
+  const recebidas = [];
+  manager.onMessage = async (payload) => recebidas.push(payload);
+
+  const agora = Math.floor(Date.now() / 1000);
+  const mensagem = (id, segundosAtras) => ({
+    key: { remoteJid: '5511999990000@s.whatsapp.net', id, fromMe: false },
+    message: { conversation: 'oi' },
+    messageTimestamp: agora - segundosAtras,
+  });
+
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'append',
+    messages: [mensagem('RECENTE', 20 * 60)],
+  });
+  assert.equal(recebidas.length, 1, 'mensagem de 20 min atras ainda merece resposta');
+  assert.equal(recebidas[0].waMessageId, 'RECENTE');
+
+  // Depois de uma queda longa, responder do nada assusta mais do que ajuda.
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'append',
+    messages: [mensagem('ANTIGA', 30 * 60 * 60)],
+  });
+  assert.equal(recebidas.length, 1, 'mensagem de 30h nao deve ser respondida');
+});
+
+test('sincronizacao de historico continua fora do pipeline', async () => {
+  const manager = new BaileysManager();
+  const recebidas = [];
+  manager.onMessage = async (p) => recebidas.push(p);
+
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'prepend',
+    messages: [
+      {
+        key: { remoteJid: '5511999990000@s.whatsapp.net', id: 'X', fromMe: false },
+        message: { conversation: 'antiga' },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+
+  assert.equal(recebidas.length, 0, 'carga de historico nao e mensagem nova');
+});

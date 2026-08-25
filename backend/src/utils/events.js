@@ -51,6 +51,9 @@ const EV = {
 
   WA_CREDENCIAIS_MIGRADAS: 'WA_CREDENCIAIS_MIGRADAS',
   WA_CREDENCIAIS_PERDIDAS: 'WA_CREDENCIAIS_PERDIDAS',
+  // Mensagem que chegou enquanto a aplicacao estava fora e voltou na reconexao.
+  MENSAGEM_OFFLINE_RECUPERADA: 'MENSAGEM_OFFLINE_RECUPERADA',
+  MENSAGEM_OFFLINE_DESCARTADA: 'MENSAGEM_OFFLINE_DESCARTADA',
 
   // Gestao de clientes: a ficha se alimenta sozinha, entao o log e o unico
   // lugar onde se ve o sistema escrevendo por conta propria.
