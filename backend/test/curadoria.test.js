@@ -60,9 +60,19 @@ test('sanitizar coage tipos e nunca grava a forma que veio do navegador', () => 
 });
 
 test('sanitizar aplica os tetos de tamanho', () => {
-  const gigante = 'x'.repeat(schema.LIMITES.promptPrincipal + 5000);
-  const limpa = schema.sanitizar({ promptPrincipal: gigante }, 'lead_capture');
-  assert.equal(limpa.promptPrincipal.length, schema.LIMITES.promptPrincipal);
+  const gigante = 'x'.repeat(schema.LIMITES.empresaCampo + 5000);
+  const limpa = schema.sanitizar({ empresa: { descricao: gigante } }, 'lead_capture');
+  assert.equal(limpa.empresa.descricao.length, schema.LIMITES.empresaCampo);
+});
+
+test('as instrucoes principais nao tem teto', () => {
+  // O escritorio precisa poder escrever o quanto o trabalho exigir. Cortar em
+  // silencio seria pior que recusar: a pessoa publica achando que o agente
+  // recebeu tudo, e o final das instrucoes simplesmente nunca existiu.
+  const enorme = 'a instrucao continua. '.repeat(3000);
+  const limpa = schema.sanitizar({ promptPrincipal: enorme }, 'lead_capture');
+  assert.equal(limpa.promptPrincipal, enorme.trim());
+  assert.equal(schema.LIMITES.promptPrincipal, null, 'teto ausente e explicito no esquema');
 });
 
 test('o tempo de espera e preso na faixa aceita', () => {
@@ -270,6 +280,30 @@ test('um curador nao consegue liberar promessa de resultado pelo prompt', () => 
 
   // Os limites vem DEPOIS do texto do curador: em conflito, prevalece o final.
   assert.ok(prompt.indexOf('[LIMITES]') > prompt.indexOf('[PAPEL]'));
+});
+
+test('a aderencia ao papel e a checagem de fato fecham o prompt', () => {
+  const config = schema.sanitizar({ promptPrincipal: 'Atenda com cuidado.' }, 'lead_capture');
+  const partes = buildInstructions({ config, primeiroContato: true, missing: ['cidade'] });
+  const prompt = partes.join('\n\n');
+
+  // Ultimo bloco, sempre: e a posicao de maior peso e a que sobrevive a um
+  // prompt longo. Se alguem acrescentar um bloco depois deste, o teste cai.
+  assert.ok(partes[partes.length - 1].startsWith('[ANTES DE ENVIAR]'));
+  assert.ok(prompt.includes('INTEGRALMENTE'), 'o papel precisa ser reafirmado como obrigatorio');
+  assert.ok(prompt.indexOf('[ANTES DE ENVIAR]') > prompt.indexOf('[FOCO]'));
+});
+
+test('nao inventar e regra inviolavel, nao preferencia da curadoria', () => {
+  // Com TODAS as regras da curadoria desativadas, a proibicao continua no prompt.
+  const config = schema.sanitizar(
+    { regras: [{ id: 'a', texto: 'Nunca invente informacao.', ativa: false }] },
+    'lead_capture'
+  );
+
+  const prompt = buildInstructions({ config }).join('\n\n');
+  assert.ok(!prompt.includes('[REGRAS]'), 'nenhuma regra da curadoria esta ativa');
+  assert.ok(prompt.includes('NUNCA afirme fato que voce nao tenha lido'));
 });
 
 test('so as regras ativas entram no prompt', () => {

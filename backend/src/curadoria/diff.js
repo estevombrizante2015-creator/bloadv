@@ -201,6 +201,29 @@ function comparar(antes, depois) {
     );
   }
 
+  if (Boolean(antes.web?.habilitado) !== Boolean(depois.web?.habilitado)) {
+    saida.push(
+      alteracao(
+        'web.habilitado',
+        'Consulta a internet',
+        'alterado',
+        simNao(antes.web?.habilitado),
+        simNao(depois.web?.habilitado)
+      )
+    );
+  }
+  if (textoMudou(antes.web?.instrucoes, depois.web?.instrucoes)) {
+    saida.push(
+      alteracao(
+        'web.instrucoes',
+        'Instrucoes da pesquisa na internet',
+        'alterado',
+        antes.web?.instrucoes,
+        depois.web?.instrucoes
+      )
+    );
+  }
+
   if (antes.tempoDeEspera?.segundos !== depois.tempoDeEspera?.segundos) {
     saida.push(
       alteracao(

@@ -30,6 +30,17 @@ const problema = (nivel, campo, titulo, mensagem, comoCorrigir) => ({
 const erro = (...args) => problema('erro', ...args);
 const aviso = (...args) => problema('aviso', ...args);
 
+/**
+ * As instrucoes principais nao tem teto (ver LIMITES em config.schema): o
+ * escritorio precisa poder escrever o quanto o trabalho exigir.
+ *
+ * Este numero nao limita nada — e o ponto a partir do qual vale a pena AVISAR
+ * que o texto agora pesa em toda resposta. ~24 mil caracteres sao cerca de 6
+ * mil tokens por turno, que e onde o custo comeca a aparecer na conta e o
+ * essencial comeca a disputar atencao com o detalhe.
+ */
+const PROMPT_LONGO = 24000;
+
 // ------------------------------------------------------------ credenciais
 
 /**
@@ -218,15 +229,18 @@ function validar(config, publicada = null) {
         'Diga pelo menos: quem ele e, quem esta do outro lado e qual o objetivo da conversa.'
       )
     );
-  } else if (prompt.length > LIMITES.promptPrincipal * 0.85) {
+  } else if (prompt.length > PROMPT_LONGO) {
     problemas.push(
       aviso(
         'promptPrincipal',
-        'Instrucoes muito longas',
-        `As instrucoes estao com ${prompt.length} de ${LIMITES.promptPrincipal} caracteres. ` +
-          'Texto longo demais faz o agente perder o que importa e encarece cada resposta.',
-        'Mova o que for informacao do escritorio (servicos, horarios, politicas) para a aba ' +
-          'Informacoes da empresa, e deixe aqui so o comportamento.'
+        'Instrucoes bem longas',
+        `As instrucoes tem ${prompt.length.toLocaleString('pt-BR')} caracteres (cerca de ` +
+          `${Math.round(prompt.length / 4 / 100) / 10} mil tokens). Nao existe teto, e o texto vai ` +
+          'inteiro para o agente — mas ele entra em TODA resposta, entao o custo por conversa sobe ' +
+          'junto e o que e essencial disputa espaco com o que e detalhe.',
+        'Se puder, mova o que for informacao do escritorio (servicos, horarios, politicas) para a ' +
+          'aba Informacoes da empresa. Se o comportamento realmente exige este tamanho, publique: ' +
+          'este aviso e informativo e nao impede nada.'
       )
     );
   }
@@ -385,6 +399,7 @@ function validar(config, publicada = null) {
     ['tomDeVoz.descricao', 'Descricao do tom', config.tomDeVoz?.descricao],
     ['audio.instrucoes', 'Instrucoes de audio', config.audio?.instrucoes],
     ['imagem.instrucoes', 'Instrucoes de imagem', config.imagem?.instrucoes],
+    ['web.instrucoes', 'Instrucoes da pesquisa na internet', config.web?.instrucoes],
     ...Object.entries(MENSAGENS).map(([k, m]) => [`mensagens.${k}`, m.label, config.mensagens?.[k]]),
     ...CAMPOS_EMPRESA.map((c) => [`empresa.${c.id}`, c.label, config.empresa?.[c.id]]),
     ...regras.map((r) => [`regras.${r.id}`, 'Regra', r.texto]),
@@ -430,4 +445,4 @@ function validar(config, publicada = null) {
   return { ok: erros.length === 0, erros, avisos };
 }
 
-module.exports = { validar, REGRAS_ESSENCIAIS, PADROES_CREDENCIAL };
+module.exports = { validar, REGRAS_ESSENCIAIS, PADROES_CREDENCIAL, PROMPT_LONGO };

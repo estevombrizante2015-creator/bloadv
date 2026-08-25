@@ -15,8 +15,13 @@ const logger = require('../utils/logger');
  *     resposta. Por isso ha gatilho estreito e timeout curto.
  *  3. Custo em tokens.
  *
- * O que volta entra no prompt como [WEB], sempre com a fonte, e os guardrails
- * de saida continuam valendo: nada de conclusao sobre o caso da pessoa.
+ * O que volta entra no prompt como [WEB] em texto limpo — sem link e sem
+ * markdown, porque isso vazava para a conversa. A fonte nao se perde: fica no
+ * registro do AgentRun, para o advogado conferir. Os guardrails de saida
+ * continuam valendo: nada de conclusao sobre o caso da pessoa.
+ *
+ * A busca tem DUAS chaves: `WEBSEARCH_ENABLED` no .env (time tecnico) e o
+ * interruptor da curadoria (escritorio). Ver `deveBuscar`.
  */
 
 /**
@@ -48,10 +53,18 @@ const BLOQUEIOS = [
 ];
 
 /**
+ * @param {string} texto             mensagem do contato
+ * @param {object} [opcoes]
+ * @param {boolean} [opcoes.habilitado] chave da curadoria (aba Midia e pesquisa)
  * @returns {{buscar: boolean, motivo: string}}
+ *
+ * Duas chaves, de donos diferentes: `env.websearch.enabled` e do time tecnico
+ * (custo, chave, contrato) e `habilitado` e do escritorio. A do escritorio nao
+ * liga o que a tecnica desligou — quem paga a conta decide primeiro.
  */
-function deveBuscar(texto) {
+function deveBuscar(texto, { habilitado = true } = {}) {
   if (!env.websearch.enabled) return { buscar: false, motivo: 'desabilitado' };
+  if (habilitado === false) return { buscar: false, motivo: 'desligado_na_curadoria' };
 
   const conteudo = String(texto || '');
   if (conteudo.length < 8) return { buscar: false, motivo: 'curto_demais' };
@@ -69,12 +82,63 @@ function deveBuscar(texto) {
 const INSTRUCOES = [
   'Voce pesquisa DADOS OBJETIVOS e atuais para um escritorio de advocacia trabalhista no Brasil.',
   '',
-  'Devolva no maximo 3 linhas, cada uma com um dado e a fonte entre parenteses.',
+  'Devolva no maximo 3 linhas de TEXTO SIMPLES, uma informacao por linha.',
   'Priorize fontes oficiais: gov.br, planalto.gov.br, inss.gov.br, caixa.gov.br, tst.jus.br.',
   'Traga apenas fato verificavel: valor, data, tabela, endereco, horario.',
+  // O valor de 2023 aparecia como se fosse o de hoje quando a pergunta dizia
+  // "hoje" e a pagina encontrada era antiga. Exigir a vigencia por extenso
+  // obriga a checar a data em vez de repetir o primeiro resultado.
+  'Diga sempre desde quando o dado vale, por extenso ("vigente desde janeiro de 2026").',
+  'Se houver versao mais recente que a da pagina encontrada, use a mais recente.',
   'NAO opine, NAO interprete lei, NAO fale sobre casos concretos.',
+  // O texto vai para dentro do prompt de uma conversa de WhatsApp. Link,
+  // markdown e marcador de citacao vazam para a resposta do agente e a fazem
+  // parecer copiada de um site — a limpeza abaixo e a rede, isto e o pedido.
+  'NAO use links, markdown, asterisco, colchete ou nota de rodape. So frases.',
   'Se nao encontrar dado confiavel e atual, responda exatamente: SEM_DADO',
 ].join('\n');
+
+/**
+ * FORMATACAO DO RESULTADO
+ * -----------------------
+ * O modelo de busca devolve markdown com a fonte embutida:
+ *
+ *   "O salario minimo e R$ 1.621,00 ([gov.br](https://www.gov.br/...?utm_source=openai))"
+ *
+ * Isso entra no prompt e sai na conversa como um pedaco de pagina colado no
+ * WhatsApp — parenteses soltos, endereco com parametro de rastreio, colchete
+ * no meio da frase. E o oposto do registro do escritorio.
+ *
+ * A origem NAO se perde: `fontes` e extraida antes da limpeza e vai para o
+ * AgentRun, onde o advogado consegue conferir. Ao contato vai so o fato, em
+ * texto corrido — que e exatamente o que o escritorio pediu em §8.7 das
+ * instrucoes: explicacao curta ao cliente, fonte registrada para o advogado.
+ */
+function formatarParaConversa(bruto) {
+  return String(bruto || '')
+    // [rotulo](url) -> rotulo
+    .replace(/\[([^\]\n]*)\]\((?:https?:)?\/\/[^)\s]*\)/gi, '$1')
+    // marcador de citacao do modelo e nota de rodape
+    .replace(/【[^】]*】/g, '')
+    .replace(/\[\^?\d+\]/g, '')
+    // parentese que sobrou contendo so um dominio ou endereco
+    .replace(/\(\s*(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:\/[^)\s]*)?\s*\)/gi, '')
+    // endereco solto
+    .replace(/(?:https?:\/\/|www\.)\S+/gi, '')
+    // enfase e cabecalho de markdown
+    .replace(/[*_`#>]+/g, '')
+    // marcadores de lista variados viram um so
+    .replace(/^[\t ]*[•·‣▪–—-]\s+/gm, '- ')
+    // sobras da remocao: parenteses vazios, espaco antes de pontuacao
+    .replace(/\(\s*\)/g, '')
+    .replace(/[ \t]+([,.;:!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .split('\n')
+    .map((linha) => linha.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 /**
  * Executa a busca. Nunca lanca e nunca demora mais que o timeout configurado:
@@ -102,16 +166,27 @@ async function buscar({ pergunta, channelId, chatId }) {
       ),
     ]);
 
-    const texto = (resposta.output_text || '').trim();
+    const bruto = (resposta.output_text || '').trim();
     const latencyMs = Date.now() - inicio;
 
-    if (!texto || texto.includes('SEM_DADO')) {
+    if (!bruto || bruto.includes('SEM_DADO')) {
       logger.info({ channelId, chatId, latencyMs }, 'Busca web sem dado confiavel');
       return { ok: false, motivo: 'sem_dado' };
     }
 
-    // Coleta as URLs citadas para poder mostrar a origem no painel.
-    const fontes = [...new Set((texto.match(/https?:\/\/[^\s)]+/g) || []).slice(0, 5))];
+    // As URLs sao colhidas ANTES da limpeza: elas vao para o registro do
+    // AgentRun (o advogado confere a origem), nunca para a conversa.
+    const fontes = [...new Set((bruto.match(/https?:\/\/[^\s)\]]+/g) || []).slice(0, 5))].map(
+      // O parametro de rastreio que a API acrescenta nao ajuda a conferir nada.
+      (url) => url.replace(/[?&]utm_source=openai\b/, '')
+    );
+
+    const texto = formatarParaConversa(bruto);
+
+    if (!texto) {
+      logger.info({ channelId, chatId, latencyMs }, 'Busca web so devolveu fonte, sem fato');
+      return { ok: false, motivo: 'sem_dado' };
+    }
 
     logger.info(
       { channelId, chatId, latencyMs, chars: texto.length, fontes: fontes.length },
@@ -139,4 +214,4 @@ async function buscar({ pergunta, channelId, chatId }) {
   }
 }
 
-module.exports = { deveBuscar, buscar, GATILHOS, BLOQUEIOS };
+module.exports = { deveBuscar, buscar, formatarParaConversa, GATILHOS, BLOQUEIOS };

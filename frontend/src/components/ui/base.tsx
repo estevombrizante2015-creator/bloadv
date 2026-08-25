@@ -55,12 +55,19 @@ export function Campo({
   dica?: string;
   exemplo?: string;
   obrigatorio?: boolean;
-  contador?: { atual: number; maximo: number };
+  contador?: { atual: number; maximo: number | null };
   children: React.ReactNode;
 }) {
   // Aviso de espaco so quando ele passa a importar. Um contador sempre visivel
   // faz a pessoa escrever para caber, em vez de escrever para explicar.
-  const apertado = contador ? contador.atual > contador.maximo * 0.8 : false;
+  //
+  // `maximo` nulo e campo SEM TETO (hoje, as instrucoes principais). Ali nao ha
+  // espaco para acabar: o numero so aparece quando o texto ja e longo o
+  // bastante para a pessoa querer saber o tamanho, e sem cor de alarme —
+  // pintar de vermelho um campo que nao tem limite seria mentir.
+  const semTeto = Boolean(contador) && !contador?.maximo;
+  const apertado = contador?.maximo ? contador.atual > contador.maximo * 0.8 : false;
+  const longo = semTeto && (contador?.atual ?? 0) > 4000;
 
   return (
     <div className="space-y-2">
@@ -70,9 +77,14 @@ export function Campo({
           {obrigatorio && <span className="text-gold-400">*</span>}
           {dica && <Dica texto={dica} />}
         </label>
-        {contador && apertado && (
+        {contador && apertado && contador.maximo && (
           <span className={`text-xs tabular-nums ${contador.atual >= contador.maximo ? 'text-red-300' : 'text-amber-300/80'}`}>
             {contador.atual.toLocaleString('pt-BR')} de {contador.maximo.toLocaleString('pt-BR')}
+          </span>
+        )}
+        {contador && longo && (
+          <span className="text-xs tabular-nums text-muted" title="Este campo nao tem limite de tamanho">
+            {contador.atual.toLocaleString('pt-BR')} caracteres
           </span>
         )}
       </div>

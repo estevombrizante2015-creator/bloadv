@@ -53,7 +53,7 @@ const ABAS = [
   { id: 'tom', label: 'Tom de voz', Icone: MessageSquare },
   { id: 'regras', label: 'Regras', Icone: ScrollText },
   { id: 'mensagens', label: 'Mensagens', Icone: MessagesSquare },
-  { id: 'midia', label: 'Audio e imagem', Icone: Mic },
+  { id: 'midia', label: 'Imagem, audio e web', Icone: Mic },
   { id: 'empresa', label: 'Empresa', Icone: Building2 },
   { id: 'historico', label: 'Historico', Icone: HistoryIcon },
 ] as const;

@@ -218,10 +218,18 @@ async function handleBatch({ channel, agent, jid, parts, pushName, phoneNumber, 
   // Atlas, conforme KNOWLEDGE_BACKEND - o pipeline nao muda.
   const tipoCaso = contact.ontology?.slots?.tipo_caso;
 
+  // O papel, o tom, as regras e o contexto da empresa vem da CURADORIA: o que
+  // a equipe do escritorio edita no painel, sem deploy. Os limites da
+  // advocacia continuam vindo do codigo e entram depois - ver prompt.builder.
+  //
+  // Lido AQUI, e nao depois da busca, porque a curadoria tambem decide se a
+  // consulta na internet acontece. Leitura em memoria, sem ida ao banco.
+  const curada = curadoria.publicada(agent.id);
+
   // Base local e busca na internet vao juntas: a segunda so dispara quando a
   // pergunta depende de dado que muda, e roda em paralelo com a primeira para
   // nao somar latencia.
-  const decisaoWeb = websearch.deveBuscar(safeText);
+  const decisaoWeb = websearch.deveBuscar(safeText, { habilitado: curada.web?.habilitado });
 
   // Consulta a ficha do cliente APENAS quando ele pergunta sobre o andamento.
   // A deteccao e por padrao de texto e nao custa nada; ir ao banco em toda
@@ -246,15 +254,9 @@ async function handleBatch({ channel, agent, jid, parts, pushName, phoneNumber, 
       : Promise.resolve(null),
   ]);
 
-  // O papel, o tom, as regras e o contexto da empresa vem da CURADORIA: o que
-  // a equipe do escritorio edita no painel, sem deploy. Os limites da
-  // advocacia continuam vindo do codigo e entram depois - ver prompt.builder.
-  //
   // `messageCount` ja foi somado ao lote acima, entao igualdade com
   // parts.length significa que nao existe mais nada nesta conversa: e a
   // abertura de verdade.
-  const curada = curadoria.publicada(agent.id);
-
   const instructions = buildInstructions({
     config: curada,
     primeiroContato: contact.messageCount === parts.length,

@@ -142,6 +142,27 @@ const env = {
     avisoACadaHoras: int(process.env.EXPEDIENTE_AVISO_HORAS, 12),
   },
 
+  /**
+   * CONSULTA DE CUSTO NA OPENAI
+   * ---------------------------
+   * Chave SEPARADA da que gera as respostas, e nao por organizacao de codigo:
+   * a API de custos (`/v1/organization/costs`) so aceita chave de ADMIN da
+   * organizacao, e uma chave de admin no mesmo lugar que a chave de uso
+   * ampliaria o estrago de um vazamento sem necessidade.
+   *
+   * Ausente, o painel diz que a leitura nao esta configurada. Nunca estima
+   * custo por conta propria: numero de dinheiro inventado e pior que numero
+   * nenhum.
+   */
+  billing: {
+    // `billing_openai` tambem e aceito: e o nome que o escritorio usou no .env.
+    key: process.env.BILLING_OPENAI || process.env.billing_openai || '',
+    // A OpenAI consolida custo com atraso e limita a frequencia da consulta.
+    // Cinco minutos deixam o painel util sem transformar F5 em rate limit.
+    cacheMs: int(process.env.BILLING_CACHE_MS, 5 * 60 * 1000),
+    timeoutMs: int(process.env.BILLING_TIMEOUT_MS, 8000),
+  },
+
   websearch: {
     // Busca na internet e um EXTRA seletivo: entra no tempo de resposta e,
     // num escritorio, repetir "o que a internet diz" e pior que nao responder.

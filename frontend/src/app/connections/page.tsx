@@ -18,6 +18,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import ConnectionCard from '@/components/ConnectionCard';
+import SaudeNumeros, { resumoSaude } from '@/components/SaudeNumeros';
 import { BrandLockup } from '@/components/Brand';
 import { useChannels } from '@/hooks/useChannels';
 import { useAuth } from '@/hooks/useAuth';
@@ -25,7 +26,9 @@ import {
   api,
   type AgentTier,
   type PausedConversation,
+  type CustoOpenAI,
   type PipelineConfig,
+  type RelatorioSaude,
   type UsageReport,
 } from '@/lib/api';
 
@@ -53,6 +56,16 @@ export default function ConnectionsPage() {
   const [usage, setUsage] = useState<UsageReport | null>(null);
   const [config, setConfig] = useState<PipelineConfig | null>(null);
   const [paused, setPaused] = useState<PausedConversation[]>([]);
+  const [saude, setSaude] = useState<RelatorioSaude | null>(null);
+  const [saudeCarregando, setSaudeCarregando] = useState(true);
+  const [custo, setCusto] = useState<CustoOpenAI | null>(null);
+
+  const loadCusto = useCallback((forcar = false) => {
+    api
+      .billing(forcar)
+      .then(setCusto)
+      .catch(() => setCusto(null));
+  }, []);
 
   const loadPaused = useCallback(() => {
     api
@@ -61,16 +74,44 @@ export default function ConnectionsPage() {
       .catch(() => setPaused([]));
   }, []);
 
+  const loadSaude = useCallback(() => {
+    api
+      .health()
+      .then(setSaude)
+      .catch(() => setSaude(null))
+      .finally(() => setSaudeCarregando(false));
+  }, []);
+
   useEffect(() => {
     api.tiers().then((r) => setTiers(r.tiers)).catch(() => setTiers([]));
     api.usage().then(setUsage).catch(() => setUsage(null));
     api.config().then(setConfig).catch(() => setConfig(null));
     loadPaused();
-  }, [loadPaused]);
+    loadCusto();
+  }, [loadPaused, loadCusto]);
+
+  /**
+   * A saude e agregada no banco (24h de mensagens, execucoes e guardrails), e
+   * nao vem pelo socket: recalcular a cada `channel:update` faria a tela pagar
+   * cinco agregacoes por QR piscando.
+   *
+   * O intervalo de 60s e o compromisso — quem esta olhando a tela ve a mudanca
+   * em menos de um minuto, e quem deixou aberta o dia todo nao gera carga.
+   * `status` na dependencia faz a leitura acontecer NA HORA quando um numero
+   * conecta ou cai, que e justamente quando a resposta muda.
+   */
+  const statusDosCanais = channels.map((c) => `${c.id}:${c.status}`).join(',');
+
+  useEffect(() => {
+    loadSaude();
+    const timer = setInterval(loadSaude, 60_000);
+    return () => clearInterval(timer);
+  }, [loadSaude, statusDosCanais]);
 
   const resume = async (channelId: string, chatId: string) => {
     await api.resumeConversation(channelId, chatId).catch(() => null);
     loadPaused();
+    loadSaude(); // conversa retomada sai do sinal de "conversas pausadas"
   };
 
   const connected = channels.filter((c) => c.status === 'connected').length;
@@ -153,7 +194,11 @@ export default function ConnectionsPage() {
             </Link>
 
             <button
-              onClick={refresh}
+              onClick={() => {
+                refresh();
+                loadSaude();
+                loadCusto(true); // botao explicito pula o cache de 5 min
+              }}
               title="Atualizar"
               className="rounded-lg border border-navy-800 p-2 text-muted transition-colors hover:border-navy-700 hover:text-cream"
             >
@@ -210,8 +255,19 @@ export default function ConnectionsPage() {
 
         {/* resumo */}
         <section className="mb-8 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-          <Stat label="Numeros conectados" value={`${connected}/3`} />
+          {/*
+            "2/3 conectados" nunca foi a resposta completa: numero conectado
+            sem agente atribuido conta como conectado e nao atende ninguem. O
+            resumo de saude vai junto, no mesmo cartao, para as duas leituras
+            nunca serem feitas em telas diferentes.
+          */}
+          <Stat
+            label="Numeros conectados"
+            value={`${connected}/3`}
+            hint={saude ? resumoSaude(saude) : undefined}
+          />
           <Stat label="Tokens usados (24h)" value={usedTokens.toLocaleString('pt-BR')} />
+          <CartaoCusto custo={custo} />
           <Stat
             label="Tokens poupados"
             value={savedTokens.toLocaleString('pt-BR')}
@@ -254,6 +310,9 @@ export default function ConnectionsPage() {
             ))}
           </div>
         )}
+
+        {/* saude: o cartao acima diz se conectou; esta secao diz se atende */}
+        <SaudeNumeros relatorio={saude} carregando={saudeCarregando} />
 
         {/* agentes configurados */}
         {config && config.agents.length > 0 && (
@@ -442,6 +501,61 @@ function Section({
       </h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * CUSTO DA CONTA OPENAI
+ * ---------------------
+ * Token e uma grandeza que ninguem transforma em decisao. O que o escritorio
+ * precisa saber e quanto ja gastou no mes — por isso o valor grande e o do
+ * mes, com o dia como apoio.
+ *
+ * Quando a leitura nao esta disponivel, o cartao mostra O MOTIVO em vez de um
+ * traco. Em numero de dinheiro, "nao sei" com explicacao mantem a confianca;
+ * um traco sem explicacao faz duvidar do painel inteiro.
+ */
+function CartaoCusto({ custo }: { custo: CustoOpenAI | null }) {
+  const moeda = (valor?: number) =>
+    typeof valor === 'number'
+      ? valor.toLocaleString('pt-BR', {
+          style: 'currency',
+          currency: (custo?.moeda || 'usd').toUpperCase(),
+          minimumFractionDigits: 2,
+        })
+      : '—';
+
+  if (!custo || !custo.ok) {
+    return (
+      <div className="rounded-xl border border-navy-800 bg-navy-900 px-4 py-3">
+        <p className="text-[10px] uppercase tracking-[0.14em] text-muted">Custo OpenAI</p>
+        <p className="mt-1 text-sm text-muted">Indisponivel</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-navy-600">
+          {custo?.motivo ?? 'Sem resposta do servidor agora.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-navy-800 bg-navy-900 px-4 py-3">
+      <p className="text-[10px] uppercase tracking-[0.14em] text-muted">Custo OpenAI (mes)</p>
+      <p className="mt-1 text-2xl font-semibold tabular-nums text-cream">{moeda(custo.custoMes)}</p>
+      <p className="mt-0.5 text-[10px] tabular-nums text-navy-600">
+        hoje {moeda(custo.custoHoje)}
+        {custo.saldo?.disponivel
+          ? ` · saldo ${moeda(custo.saldo.restante)}`
+          : custo.doCache
+            ? ' · leitura em cache'
+            : ''}
+      </p>
+      {!custo.saldo?.disponivel && custo.saldo?.motivo && (
+        <p className="mt-1 text-[10px] leading-relaxed text-navy-600" title={custo.saldo.motivo}>
+          Saldo nao exposto pela OpenAI
+        </p>
+      )}
+      {custo.aviso && <p className="mt-1 text-[10px] text-amber-300/80">{custo.aviso}</p>}
+    </div>
   );
 }
 

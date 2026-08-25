@@ -12,6 +12,8 @@ const { env } = require('../config/env');
 const businessHours = require('../conversation/business-hours');
 const { CANAL_TESTE } = require('../curadoria/sandbox.service');
 const curadoria = require('../curadoria/config.service');
+const saude = require('../whatsapp/saude.service');
+const billing = require('../agent/billing.service');
 
 /**
  * Ativo/standby vem da curadoria, nao do arquivo de cadastro: o painel pode ter
@@ -42,6 +44,14 @@ async function channelsRoutes(fastify) {
       })),
     };
   });
+
+  /**
+   * Saude dos numeros: o cartao responde "conectou?", isto responde "esta
+   * atendendo?". Rota estatica declarada antes de /api/channels/:id — o
+   * roteador do Fastify ja da prioridade a ela, mas a ordem aqui deixa a
+   * intencao visivel para quem for mexer.
+   */
+  fastify.get('/api/channels/health', async () => saude.avaliar(manager.listPublicStates()));
 
   fastify.get('/api/channels/:id', async (request, reply) => {
     if (!isValidChannel(request.params.id)) {
@@ -91,6 +101,15 @@ async function channelsRoutes(fastify) {
 
   /** Tiers disponiveis e para qual modelo OpenAI cada um aponta. */
   fastify.get('/api/agent/tiers', async () => ({ tiers: listTiers() }));
+
+  /**
+   * Custo da conta OpenAI. Token e uma grandeza que ninguem transforma em
+   * decisao; o que o escritorio precisa saber e quanto ja gastou no mes.
+   * `?forcar=1` pula o cache — e o que o botao de atualizar do painel usa.
+   */
+  fastify.get('/api/agent/billing', async (request) =>
+    billing.resumo({ forcar: request.query?.forcar === '1' })
+  );
 
   /** Painel: consumo, economia de tokens e guardrails disparados. */
   fastify.get('/api/agent/usage', async () => {

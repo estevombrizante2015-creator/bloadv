@@ -144,8 +144,95 @@ export interface PausedConversation {
   loopCounter?: number;
 }
 
+/**
+ * SAUDE DOS NUMEROS
+ * -----------------
+ * O cartao de conexao responde "conectou?". Isto responde "esta atendendo?" —
+ * que e a pergunta que importa, porque um numero conectado sem agente
+ * atribuido fica verde e nao responde ninguem. Ver backend/whatsapp/saude.service.
+ */
+export type NivelSaude = 'critico' | 'atencao' | 'saudavel' | 'inativo';
+
+export interface SinalSaude {
+  nivel: NivelSaude;
+  titulo: string;
+  detalhe: string;
+  comoResolver: string | null;
+}
+
+export interface SaudeCanal {
+  id: string;
+  label: string;
+  role: ChannelRole;
+  status: ChannelStatus;
+  phoneNumber: string | null;
+  phoneFormatted: string | null;
+  pushName: string | null;
+  nivel: NivelSaude;
+  nivelLabel: string;
+  sinais: SinalSaude[];
+  agente: (BoundAgent & { ligado: boolean }) | null;
+  conexao: {
+    temCredenciais: boolean;
+    conectadoDesde: string | null;
+    desconectadoEm: string | null;
+    tempoConectadoMs: number | null;
+    ultimoErro: string | null;
+  };
+  volume24h: {
+    recebidas24h: number;
+    enviadas24h: number;
+    enviadasPorPessoa24h: number;
+    ultimaRecebidaEm: string | null;
+    ultimaRespondidaEm: string | null;
+    execucoes: number;
+    falhas: number;
+    tokens: number;
+    latenciaMediaMs: number | null;
+  };
+  conversasPausadas: number;
+  respostasBloqueadas24h: number;
+}
+
+export interface RelatorioSaude {
+  janela: string;
+  verificadoEm: string;
+  resumo: Record<NivelSaude, number>;
+  canais: SaudeCanal[];
+}
+
+/**
+ * CUSTO DA CONTA OPENAI
+ * ---------------------
+ * `ok: false` nunca vem sem `motivo`: dinheiro e o unico numero do painel em
+ * que um traco sem explicacao vira desconfianca do sistema inteiro.
+ */
+export interface SaldoOpenAI {
+  disponivel: boolean;
+  restante?: number;
+  concedido?: number;
+  usado?: number;
+  motivo?: string;
+}
+
+export interface CustoOpenAI {
+  ok: boolean;
+  motivo?: string;
+  aviso?: string;
+  doCache?: boolean;
+  moeda?: string;
+  custoHoje?: number;
+  custoMes?: number;
+  observacao?: string;
+  atualizadoEm?: string;
+  saldo?: SaldoOpenAI;
+}
+
 export const api = {
   channels: () => request<{ channels: ChannelState[] }>('/api/channels'),
+  health: () => request<RelatorioSaude>('/api/channels/health'),
+  billing: (forcar = false) =>
+    request<CustoOpenAI>(`/api/agent/billing${forcar ? '?forcar=1' : ''}`),
   connect: (id: string) => request<ChannelState>(`/api/channels/${id}/connect`, { method: 'POST' }),
   disconnect: (id: string) =>
     request<ChannelState>(`/api/channels/${id}/disconnect`, { method: 'POST' }),

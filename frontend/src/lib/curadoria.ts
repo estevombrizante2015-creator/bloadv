@@ -49,6 +49,7 @@ export interface ConfiguracaoAgente {
   mensagens: Record<ChaveMensagem, string>;
   audio: { habilitado: boolean; instrucoes: string; responderSempreEmTexto: boolean };
   imagem: { habilitado: boolean; instrucoes: string };
+  web: { habilitado: boolean; instrucoes: string };
   tempoDeEspera: { segundos: number };
   empresa: Empresa;
 }
@@ -96,7 +97,8 @@ export interface Opcoes {
     comoModelo: boolean;
   }>;
   camposEmpresa: Array<{ id: keyof Empresa; label: string; dica: string; obrigatorio: boolean }>;
-  limites: Record<string, number>;
+  // `promptPrincipal: null` = campo sem teto. Os demais continuam limitados.
+  limites: Record<string, number> & { promptPrincipal: number | null };
   regrasInviolaveis: string[];
   papeis: Array<{ id: string; label: string; descricao: string }>;
   permissoes: Permissoes;

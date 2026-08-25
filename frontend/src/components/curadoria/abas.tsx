@@ -56,7 +56,7 @@ export function AbaInstrucoes({ config, aoMudar, opcoes, podeEditar, padrao }: P
     >
       <Campo
         titulo="O que este colaborador faz"
-        explicacao="Escreva em texto corrido, do jeito que voce explicaria a uma pessoa. Listas e numeracoes ajudam a organizar a ordem das coisas."
+        explicacao="Escreva em texto corrido, do jeito que voce explicaria a uma pessoa. Listas e numeracoes ajudam a organizar a ordem das coisas. Nao ha limite de tamanho — escreva o quanto o trabalho exigir; o agente recebe tudo, palavra por palavra."
         contador={{ atual: config.promptPrincipal.length, maximo: opcoes.limites.promptPrincipal }}
         obrigatorio
       >
@@ -337,8 +337,8 @@ export function AbaMidia({ config, aoMudar, opcoes, podeEditar }: PropsAba) {
 
   return (
     <Secao
-      titulo="Audio, imagens e tempo de resposta"
-      descricao="Como ele lida com o que chega alem de texto, e quanto espera antes de responder."
+      titulo="Imagem, audio, web e tempo de resposta"
+      descricao="O que ele consegue entender alem de texto, o que pode consultar na internet e quanto espera antes de responder."
     >
       {/* ------------------------------------------------------- audio */}
       <div className="space-y-4 rounded-2xl border border-navy-800 p-5">
@@ -398,6 +398,39 @@ export function AbaMidia({ config, aoMudar, opcoes, podeEditar }: PropsAba) {
             <EditorTexto
               valor={config.imagem.instrucoes}
               aoMudar={(instrucoes) => aoMudar({ imagem: { ...config.imagem, instrucoes } })}
+              minimoDeLinhas={3}
+              desabilitado={!podeEditar}
+            />
+          </Campo>
+        )}
+      </div>
+
+      {/* ---------------------------------------------------------- web */}
+      {/*
+        A pesquisa fica ao lado de audio e imagem porque, para quem cura, as
+        tres respondem a mesma pergunta: o que este agente consegue consultar?
+        A diferenca e que esta busca custa segundos de espera do contato — por
+        isso o gatilho e estreito e esta escrito na explicacao, nao escondido.
+      */}
+      <div className="space-y-4 rounded-2xl border border-navy-800 p-5">
+        <Interruptor
+          ligado={config.web.habilitado}
+          desabilitado={!podeEditar}
+          aoMudar={(habilitado) => aoMudar({ web: { ...config.web, habilitado } })}
+          titulo="Consultar a internet"
+          explicacao="Só entra em cena quando a pergunta depende de dado que muda: valor vigente, tabela do ano, endereço ou horário de órgão público. Nunca para opinar sobre o caso da pessoa, e nunca em saudação ou triagem. Desligado, o agente responde com o que o escritório cadastrou."
+        />
+
+        {config.web.habilitado && (
+          <Campo
+            titulo="Instrucoes para a pesquisa"
+            explicacao="Como usar o que voltar da internet. O agente ja e proibido de citar link ou fonte na conversa — a origem fica registrada para o advogado."
+            exemplo="Diga desde quando o dado vale. Nunca transforme dado geral em conclusao sobre o caso da pessoa."
+            contador={{ atual: config.web.instrucoes.length, maximo: opcoes.limites.midiaInstrucoes }}
+          >
+            <EditorTexto
+              valor={config.web.instrucoes}
+              aoMudar={(instrucoes) => aoMudar({ web: { ...config.web, instrucoes } })}
               minimoDeLinhas={3}
               desabilitado={!podeEditar}
             />

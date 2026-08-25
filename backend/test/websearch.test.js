@@ -86,3 +86,50 @@ test('falha ou timeout da busca nao lanca: o atendimento segue', async () => {
   assert.equal(r.ok, false);
   assert.ok(r.motivo, 'a falha precisa vir com motivo, nao com excecao');
 });
+
+// ---------------------------------------------------- interruptor da curadoria
+
+test('o escritorio consegue desligar a pesquisa sem mexer no .env', () => {
+  delete require.cache[require.resolve('../src/agent/websearch.service')];
+  const servico = require('../src/agent/websearch.service');
+
+  const pergunta = 'Qual o salario minimo hoje?';
+  assert.equal(servico.deveBuscar(pergunta, { habilitado: true }).buscar, true);
+
+  const desligado = servico.deveBuscar(pergunta, { habilitado: false });
+  assert.equal(desligado.buscar, false);
+  assert.equal(desligado.motivo, 'desligado_na_curadoria');
+
+  // Sem a opcao, o comportamento e o de antes: quem manda e o .env.
+  assert.equal(servico.deveBuscar(pergunta).buscar, true);
+});
+
+// ------------------------------------------------------ formato do resultado
+
+test('o resultado da busca chega limpo, sem link nem markdown', () => {
+  const servico = require('../src/agent/websearch.service');
+
+  // Formato real devolvido pela API: fonte em markdown com parametro de rastreio.
+  const bruto =
+    'O salario minimo e de R$ 1.621,00 ([gov.br](https://www.gov.br/x?utm_source=openai))\n' +
+    '- **Vigente desde** janeiro de 2026 【4:0†source】';
+
+  const limpo = servico.formatarParaConversa(bruto);
+
+  assert.ok(!/https?:\/\//.test(limpo), 'nenhum endereco pode sobrar');
+  assert.ok(!/[[\]*`【】]/.test(limpo), 'nenhum caractere de markdown ou citacao');
+  assert.ok(!/\(\s*\)/.test(limpo), 'nao pode sobrar parentese vazio');
+  assert.ok(limpo.includes('R$ 1.621,00'), 'o fato precisa sobreviver a limpeza');
+  assert.ok(limpo.includes('janeiro de 2026'), 'a vigencia precisa sobreviver');
+  assert.equal(limpo.split('\n')[1], '- Vigente desde janeiro de 2026');
+});
+
+test('a limpeza preserva parenteses que fazem parte da frase', () => {
+  const servico = require('../src/agent/websearch.service');
+
+  const texto = servico.formatarParaConversa(
+    'Valor definido pelo Decreto n 12.797, de 23 de dezembro de 2025 (publicado no Diario Oficial).'
+  );
+  assert.ok(texto.includes('(publicado no Diario Oficial)'));
+  assert.ok(texto.includes('12.797'));
+});
