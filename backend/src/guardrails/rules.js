@@ -9,16 +9,81 @@
  * de publicidade e captacao da advocacia (Provimento 205/2021 CFOAB).
  */
 
-const OPT_OUT_KEYWORDS = [
-  'parar', 'pare', 'sair', 'descadastrar', 'nao quero mais', 'nao me mande',
-  'remover meu numero', 'stop', 'unsubscribe', 'me tire da lista',
+/**
+ * Texto sem acento, sem pontuacao e com espacos normalizados.
+ *
+ * As listas abaixo eram comparadas com o texto cru, entao "nao quero mais
+ * receber" so era reconhecido quando vinha SEM acento: quem escrevia "não"
+ * passava batido. Comparar sempre pela forma dobrada resolve os dois lados.
+ */
+const normalizar = (texto) =>
+  (texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/**
+ * PEDIDO DE PARAR DE RECEBER MENSAGEM
+ * -----------------------------------
+ * Duas listas, porque as palavras tem pesos muito diferentes.
+ *
+ * O opt-out e a regra mais cara do sistema: marca `Contact.optedOut`, que nao
+ * expira, nao aparece como conversa pausada e nao sai nem pelo botao Retomar.
+ * Errar aqui nao atrasa um atendimento — apaga o lead.
+ *
+ * E era o que acontecia: a busca era por SUBSTRING no texto inteiro. "decidi
+ * sair", num relato de demissao, casava com `sair`; "parceria" casava com
+ * `pare`. Uma triagem trabalhista inteira — datas, provas, CNPJ — foi
+ * respondida com "nao vou mais enviar mensagens por aqui", e o contato ficou
+ * mudo para sempre.
+ *
+ * Dai a assimetria: nao reconhecer um opt-out custa uma resposta a mais, que a
+ * pessoa corrige repetindo; reconhecer um que nao existe custa o cliente.
+ */
+
+/** Pedido inequivoco. Vale em qualquer posicao, em mensagem de qualquer tamanho. */
+const OPT_OUT_FRASES = [
+  /\bnao (quero|queria|desejo|gostaria de) (mais )?(receber|ser (contatad|incomodad|abordad)|mensage|contato)/,
+  /\bnao (me )?(mande|manda|mandem|envie|envia|enviem|escreva|escrevam|ligue|liguem) mais\b/,
+  /\bpar(e|em|ar) de (me )?(mandar|enviar|escrever|ligar|encher|incomodar)/,
+  /\b(remover|remova|tirar|tire|tira|excluir|exclua|apagar|apague|cancelar|cancele) (o )?meu (numero|contato|cadastro|whatsapp)/,
+  /\bme (tire|tira|tirem|remova|remove|removam|exclua|descadastre) (da|de|dessa|desta) (sua )?(lista|listas|divulgacao|grupo)/,
+  /\b(sair|descadastrar) (da|dessa|desta|de sua) (lista|divulgacao)/,
+  /\bme descadastr/,
+  /\bnao tenho interesse em (receber|mais)/,
 ];
 
-const HUMAN_HANDOFF_KEYWORDS = [
-  'falar com humano', 'falar com atendente', 'quero uma pessoa', 'atendente humano',
-  'me transfere', 'supervisor', 'falar com o advogado', 'falar com advogado',
-  'falar com o doutor', 'quero falar com a dra', 'quero falar com o dr',
-  'reclamacao formal', 'procon', 'oab', 'reclamar do escritorio',
+/**
+ * Comando curto e ambiguo. So vale quando e a mensagem INTEIRA: no comeco dela
+ * e em ate `OPT_OUT_MAX_PALAVRAS` palavras. "sair" sozinho e descadastro; "vou
+ * sair da empresa" e o caso da pessoa.
+ *
+ * `para` ficou de fora de proposito — e preposicao ("para quando e a
+ * consulta?"). `pare`, `parar` e `parem` sao verbo e nao tem essa ambiguidade.
+ */
+const OPT_OUT_COMANDOS =
+  /^(?:por favor )?(?:eu )?(?:quero |queria |desejo |pode |favor |so )?(?:par(?:e|ar|em)|sair|saia|stop|unsubscribe|cancelar|descadastrar|desinscrever)\b/;
+
+const OPT_OUT_MAX_PALAVRAS = 3;
+
+/**
+ * PEDIDO DE FALAR COM UMA PESSOA
+ * ------------------------------
+ * Mesmo problema, custo menor: cai em handoff humano, que o painel mostra e o
+ * botao Retomar desfaz. Ainda assim, `supervisor` como substring transformava
+ * "Supervisor de Trafego de Conteudo" — o CARGO de quem escreve — em pedido de
+ * atendente, no meio da propria apresentacao do lead.
+ */
+const HUMAN_HANDOFF_PATTERNS = [
+  /\b(falar|conversar|atendimento|atendido|atendida) com (o |a |um |uma )?(humano|humana|pessoa|atendente|supervisor|gerente|responsavel|advogad[oa]|doutor|doutora|dr|dra)\b/,
+  /\bquero (falar com )?(um|uma) (pessoa|atendente|humano|humana)\b/,
+  /\batendente (humano|de verdade)\b/,
+  /\bme (transfere|transfira|passa|passe|encaminha|encaminhe)\b/,
+  /\b(reclamacao formal|reclamar (do|no|com o) escritorio)\b/,
+  /\b(procon|oab)\b/,
 ];
 
 /**
@@ -154,13 +219,18 @@ const FORBIDDEN_CLAIMS = [
 ];
 
 const isOptOut = (text) => {
-  const t = (text || '').toLowerCase().trim();
-  return OPT_OUT_KEYWORDS.some((k) => t === k || t.includes(k));
+  const t = normalizar(text);
+  if (!t) return false;
+
+  if (OPT_OUT_FRASES.some((re) => re.test(t))) return true;
+
+  // Comando solto: so quando a mensagem inteira e o pedido.
+  return t.split(' ').length <= OPT_OUT_MAX_PALAVRAS && OPT_OUT_COMANDOS.test(t);
 };
 
 const wantsHuman = (text) => {
-  const t = (text || '').toLowerCase();
-  return HUMAN_HANDOFF_KEYWORDS.some((k) => t.includes(k));
+  const t = normalizar(text);
+  return Boolean(t) && HUMAN_HANDOFF_PATTERNS.some((re) => re.test(t));
 };
 
 const hasInjection = (text) => INJECTION_PATTERNS.some((re) => re.test(text || ''));
@@ -206,8 +276,10 @@ function checkLinks(text, allowedDomains = []) {
 }
 
 module.exports = {
-  OPT_OUT_KEYWORDS,
-  HUMAN_HANDOFF_KEYWORDS,
+  normalizar,
+  OPT_OUT_FRASES,
+  OPT_OUT_COMANDOS,
+  HUMAN_HANDOFF_PATTERNS,
   INJECTION_PATTERNS,
   PARTE_CONTRARIA_PATTERNS,
   PII_PATTERNS,

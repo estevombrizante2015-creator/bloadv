@@ -16,9 +16,14 @@
  *   npm run liberar                     lista quem esta calado, sem gravar
  *   npm run liberar -- --todos          libera todos os listados
  *   npm run liberar -- 5511999998888    libera um numero
+ *   npm run liberar -- 5511999998888 --desfazer-optout
  *
- * Nao mexe em quem pediu para parar de receber mensagem (`optedOut`): isso e
- * decisao do contato, nao estado de atendimento.
+ * Opt-out (`optedOut`) e decisao do contato, nao estado de atendimento, e por
+ * isso fica de fora do lote. Mas a regra de descadastro ja marcou gente por
+ * engano — ela procurava as palavras por substring, e "decidi sair" no meio de
+ * um relato bastava — e um contato assim nao aparece nem como conversa
+ * pausada. `--desfazer-optout` existe para esses casos: exige um numero
+ * explicito, um de cada vez, para nunca virar um "reativar todo mundo".
  */
 const mongoose = require('mongoose');
 const { assertEnv } = require('../src/config/env');
@@ -34,7 +39,13 @@ async function main() {
 
   const argumentos = process.argv.slice(2).filter((a) => !a.startsWith('--'));
   const todos = process.argv.includes('--todos');
+  const desfazerOptOut = process.argv.includes('--desfazer-optout');
   const alvo = soDigitos(argumentos[0]);
+
+  if (desfazerOptOut && !alvo) {
+    console.log('--desfazer-optout precisa do numero (ou do jid) de quem sera reativado.');
+    return;
+  }
 
   /**
    * O alvo pode vir como telefone ou como LID. Muitos chats do WhatsApp sao
@@ -43,9 +54,21 @@ async function main() {
    * achar no painel.
    */
   const bruto = argumentos[0] || '';
-  const filtro = { humanHandoff: true, optedOut: { $ne: true } };
-  if (alvo && bruto.includes('@')) filtro.jid = bruto;
-  else if (alvo) filtro.$or = [{ phoneNumber: alvo }, { jid: new RegExp(`^${alvo}@`) }];
+
+  /**
+   * Quem foi marcado como descadastrado tem `humanHandoff` em false: o filtro
+   * padrao nem o encontraria. Por isso o alvo do `--desfazer-optout` e outro.
+   */
+  const condicoes = [
+    desfazerOptOut
+      ? { $or: [{ humanHandoff: true }, { optedOut: true }] }
+      : { humanHandoff: true, optedOut: { $ne: true } },
+  ];
+
+  if (alvo && bruto.includes('@')) condicoes.push({ jid: bruto });
+  else if (alvo) condicoes.push({ $or: [{ phoneNumber: alvo }, { jid: new RegExp(`^${alvo}@`) }] });
+
+  const filtro = condicoes.length > 1 ? { $and: condicoes } : condicoes[0];
 
   const contatos = await Contact.find(filtro).lean();
   const pausadas = await Conversation.find({
@@ -57,11 +80,10 @@ async function main() {
     return;
   }
 
-  console.log(`\nContatos em atendimento humano (agente calado): ${contatos.length}`);
+  console.log(`\nContatos com o agente calado: ${contatos.length}`);
   for (const c of contatos) {
-    console.log(
-      `  ${c.channelId} | ${formatNumber(c.phoneNumber) || c.jid} | motivo: ${c.handoffReason || '-'}`
-    );
+    const motivo = c.optedOut ? 'descadastrado (opt-out)' : c.handoffReason || 'atendimento humano';
+    console.log(`  ${c.channelId} | ${formatNumber(c.phoneNumber) || c.jid} | motivo: ${motivo}`);
   }
 
   console.log(`\nConversas pausadas: ${pausadas.length}`);
@@ -76,9 +98,10 @@ async function main() {
 
   const jids = contatos.map((c) => c.jid);
 
-  const { modifiedCount: liberados } = await Contact.updateMany(filtro, {
-    $set: { humanHandoff: false, handoffReason: null },
-  });
+  const mudancas = { humanHandoff: false, handoffReason: null };
+  if (desfazerOptOut) mudancas.optedOut = false;
+
+  const { modifiedCount: liberados } = await Contact.updateMany(filtro, { $set: mudancas });
 
   const filtroConversa = alvo
     ? { chatId: { $in: jids }, status: { $in: ['PAUSED', 'BOT_LOOP_DETECTED'] } }

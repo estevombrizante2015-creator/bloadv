@@ -13,15 +13,57 @@ const router = require('../src/agent/router');
 
 test('detecta opt-out', () => {
   assert.equal(rules.isOptOut('PARAR'), true);
+  assert.equal(rules.isOptOut('pare'), true);
+  assert.equal(rules.isOptOut('stop'), true);
+  assert.equal(rules.isOptOut('quero sair'), true);
   assert.equal(rules.isOptOut('nao quero mais receber'), true);
+  assert.equal(rules.isOptOut('por favor, pare de me mandar mensagem'), true);
+  assert.equal(rules.isOptOut('me tire da sua lista'), true);
+  assert.equal(rules.isOptOut('remover meu numero'), true);
   assert.equal(rules.isOptOut('quanto tempo demora?'), false);
+});
+
+test('opt-out escrito com acento e reconhecido', () => {
+  // A comparacao era feita contra o texto cru, com as palavras da lista sem
+  // acento: quem escrevia "não quero mais receber" — a forma correta — nunca
+  // era atendido no pedido de parar.
+  assert.equal(rules.isOptOut('não quero mais receber mensagens'), true);
+  assert.equal(rules.isOptOut('Não me mande mais nada'), true);
+});
+
+test('relato do proprio caso nunca vira pedido de descadastro', () => {
+  /**
+   * O bug que originou este teste: a busca era por substring no texto inteiro.
+   * Uma triagem trabalhista completa foi encerrada com "nao vou mais enviar
+   * mensagens por aqui" porque continha "decidi sair" (casou com `sair`) e
+   * "parceria" (casou com `pare`). O contato ficou `optedOut` — mudo para
+   * sempre, sem aparecer como conversa pausada e sem sair pelo botao Retomar.
+   */
+  const triagem = [
+    'Ola, meu nome e Estevao. Estou entrando em contato para uma avaliacao trabalhista.',
+    'Antes de pedir demissao tentei negociar uma saida amigavel. Como nao houve acordo, decidi sair.',
+    'Minha gerente disse que eu estava "pensando zero na parceria que tivemos esse tempo".',
+    'Meu cargo final era Supervisor de Trafego de Conteudo Digital.',
+  ].join('\n');
+
+  assert.equal(rules.isOptOut(triagem), false);
+  assert.equal(rules.wantsHuman(triagem), false, 'o CARGO nao e pedido de atendente');
+
+  // As palavras isoladas, no meio de uma frase, tambem nao valem.
+  assert.equal(rules.isOptOut('vou sair da empresa mes que vem'), false);
+  assert.equal(rules.isOptOut('para quando e a consulta?'), false);
+  assert.equal(rules.isOptOut('nao quero mais trabalhar la, e insuportavel'), false);
 });
 
 test('detecta pedido de advogado ou humano', () => {
   assert.equal(rules.wantsHuman('quero falar com advogado'), true);
   assert.equal(rules.wantsHuman('quero falar com o doutor'), true);
+  assert.equal(rules.wantsHuman('quero falar com uma pessoa'), true);
+  assert.equal(rules.wantsHuman('me transfere para um atendente'), true);
   assert.equal(rules.wantsHuman('vou reclamar na OAB'), true);
+  assert.equal(rules.wantsHuman('reclamação formal'), true);
   assert.equal(rules.wantsHuman('obrigado, ficou claro'), false);
+  assert.equal(rules.wantsHuman('meu supervisor me chamou atencao'), false);
 });
 
 test('detecta possivel parte contraria (conflito de interesses)', () => {
