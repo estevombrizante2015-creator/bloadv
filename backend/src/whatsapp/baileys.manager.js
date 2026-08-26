@@ -27,6 +27,13 @@ const {
 const waLogger = pino({ level: 'silent' });
 
 /**
+ * Por quanto tempo lembramos do id de uma mensagem que nos mesmos enviamos.
+ * O eco do WhatsApp chega em segundos; dez minutos cobrem qualquer atraso de
+ * rede e mantem o mapa pequeno.
+ */
+const ECO_TTL_MS = 10 * 60 * 1000;
+
+/**
  * GERENCIADOR MULTI-SESSAO
  * ------------------------
  * Uma instancia Baileys por canal (leads-1, leads-2, clients-1).
@@ -45,6 +52,38 @@ class BaileysManager extends EventEmitter {
     /** @type {Map<string, object>} estado em memoria por canal */
     this.sessions = new Map();
     this.onMessage = null; // injetado pelo bootstrap (evita dependencia circular)
+    // Resposta digitada a mao no aplicativo do celular. Tambem injetado.
+    this.onOwnMessage = null;
+    /** @type {Map<string, number>} ids que ESTE sistema enviou -> quando */
+    this.enviadasPorNos = new Map();
+  }
+
+  /**
+   * Registra um id como enviado por este sistema.
+   *
+   * O WhatsApp devolve em `messages.upsert` tudo o que sai do numero — a
+   * resposta que o agente acabou de mandar inclusive — marcado como `fromMe`.
+   * Sem esta lista nao ha como distinguir o proprio eco de uma resposta que
+   * alguem do escritorio digitou no celular, e cada mensagem do agente viraria
+   * uma segunda bolha no painel.
+   */
+  registrarEnvioProprio(waMessageId) {
+    if (!waMessageId) return;
+
+    const agora = Date.now();
+    // O eco chega em segundos. O Map preserva a ordem de insercao, entao basta
+    // varrer do mais antigo ate achar um que ainda esta na janela.
+    for (const [id, em] of this.enviadasPorNos) {
+      if (agora - em <= ECO_TTL_MS) break;
+      this.enviadasPorNos.delete(id);
+    }
+
+    this.enviadasPorNos.set(waMessageId, agora);
+  }
+
+  /** Esta mensagem `fromMe` saiu daqui, ou foi digitada no aparelho? */
+  enviadaPorNos(waMessageId) {
+    return Boolean(waMessageId) && this.enviadasPorNos.has(waMessageId);
   }
 
   // ---------------------------------------------------------------- estado
@@ -506,21 +545,56 @@ class BaileysManager extends EventEmitter {
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
 
-        // Camada 1 do anti-loop: o que sai daqui nunca pode voltar como entrada.
-        if (msg.key.fromMe) {
-          logger.debug(
-            { ev: EV.FROM_ME_IGNORED, channelId, chatId: jid, waMessageId: msg.key.id },
-            'Mensagem propria ignorada'
-          );
-          continue;
-        }
-
         if (jid === 'status@broadcast') continue;
         if (jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) continue;
         if (!env.wa.allowGroups && jid.endsWith('@g.us')) continue;
         if (!msg.message) continue;
 
         const timestamp = Number(msg.messageTimestamp) * 1000 || Date.now();
+
+        /**
+         * Mensagem que saiu deste numero.
+         *
+         * Camada 1 do anti-loop: o que ESTE sistema enviou nunca pode voltar
+         * como entrada — descartado aqui, como sempre foi.
+         *
+         * O resto, porem, e alguem do escritorio respondendo pelo celular. Era
+         * descartado junto, e por isso o painel mostrava so metade da
+         * conversa: as perguntas do contato apareciam, as respostas dadas no
+         * aparelho nao existiam para o sistema — nem no historico, nem no
+         * contexto que o agente le quando volta a atender.
+         */
+        if (msg.key.fromMe) {
+          if (this.enviadaPorNos(msg.key.id)) {
+            logger.debug(
+              { ev: EV.FROM_ME_IGNORED, channelId, chatId: jid, waMessageId: msg.key.id },
+              'Eco da propria mensagem ignorado'
+            );
+            continue;
+          }
+
+          // Replay da fila apos uma queda: o que envelheceu demais nao vale o
+          // custo de baixar midia e transcrever de novo.
+          if (type === 'append' && Date.now() - timestamp > env.wa.maxOfflineAgeMs) continue;
+
+          logger.info(
+            {
+              ev: EV.RESPOSTA_MANUAL_NO_APARELHO,
+              channelId,
+              chatId: jid,
+              waMessageId: msg.key.id,
+            },
+            'Resposta enviada pelo aparelho; registrando no historico'
+          );
+
+          const proprio = { channelId, jid, msg, waMessageId: msg.key.id, timestamp };
+          this.emit('message:out:manual', proprio);
+
+          if (typeof this.onOwnMessage === 'function') {
+            await this.onOwnMessage(proprio);
+          }
+          continue;
+        }
 
         // Recuperada da fila do WhatsApp apos uma queda. Vale responder o que
         // ainda esta vivo; o que envelheceu demais so assusta quem recebe.
@@ -626,6 +700,12 @@ class BaileysManager extends EventEmitter {
     }
 
     const sent = await state.sock.sendMessage(jid, { text });
+
+    // Antes de qualquer await: o eco desta mensagem chega em `messages.upsert`
+    // e precisa encontrar o id ja registrado, senao volta como se fosse uma
+    // resposta digitada no celular.
+    this.registrarEnvioProprio(sent?.key?.id);
+
     this.emit('message:out', { channelId, jid, text, waMessageId: sent?.key?.id });
     return sent;
   }

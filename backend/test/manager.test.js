@@ -191,6 +191,77 @@ test('mensagem recuperada na reconexao e processada, nao descartada', async () =
   assert.equal(recebidas.length, 1, 'mensagem de 30h nao deve ser respondida');
 });
 
+// ------------------------------- resposta digitada no proprio aparelho
+
+test('resposta enviada pelo celular entra no historico, em vez de sumir', async () => {
+  // Toda mensagem `fromMe` era descartada. Com o agente pausado, quem atende
+  // responde pelo WhatsApp do celular — e o painel mostrava so o que o cliente
+  // dizia, como se o escritorio nunca tivesse respondido.
+  const manager = new BaileysManager();
+  const proprias = [];
+  const recebidas = [];
+  manager.onOwnMessage = async (payload) => proprias.push(payload);
+  manager.onMessage = async (payload) => recebidas.push(payload);
+
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'notify',
+    messages: [
+      {
+        key: { remoteJid: '5511999990000@s.whatsapp.net', id: 'DIGITADA', fromMe: true },
+        message: { conversation: 'ja estou vendo isso para voce' },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+
+  assert.equal(proprias.length, 1, 'a resposta do atendente precisa ser registrada');
+  assert.equal(proprias[0].waMessageId, 'DIGITADA');
+  assert.equal(recebidas.length, 0, 'e nunca pode entrar como se o contato tivesse falado');
+});
+
+test('o eco da mensagem que o sistema enviou nao vira bolha nova', async () => {
+  // O WhatsApp devolve em `messages.upsert` tudo o que sai do numero, inclusive
+  // a resposta que o agente acabou de mandar. Sem distinguir, cada resposta
+  // apareceria duas vezes no painel.
+  const manager = new BaileysManager();
+  const proprias = [];
+  manager.onOwnMessage = async (payload) => proprias.push(payload);
+
+  manager.registrarEnvioProprio('ENVIADA-PELO-AGENTE');
+
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'notify',
+    messages: [
+      {
+        key: { remoteJid: '5511999990000@s.whatsapp.net', id: 'ENVIADA-PELO-AGENTE', fromMe: true },
+        message: { conversation: 'resposta do agente' },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+      },
+    ],
+  });
+
+  assert.equal(proprias.length, 0);
+});
+
+test('resposta antiga recuperada da fila nao e reprocessada', async () => {
+  const manager = new BaileysManager();
+  const proprias = [];
+  manager.onOwnMessage = async (payload) => proprias.push(payload);
+
+  await manager.onMessagesUpsert('leads-1', {
+    type: 'append',
+    messages: [
+      {
+        key: { remoteJid: '5511999990000@s.whatsapp.net', id: 'VELHA', fromMe: true },
+        message: { audioMessage: {} },
+        messageTimestamp: Math.floor(Date.now() / 1000) - 30 * 60 * 60,
+      },
+    ],
+  });
+
+  assert.equal(proprias.length, 0, 'nao vale pagar transcricao por audio de 30h atras');
+});
+
 test('sincronizacao de historico continua fora do pipeline', async () => {
   const manager = new BaileysManager();
   const recebidas = [];

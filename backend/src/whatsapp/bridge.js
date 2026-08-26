@@ -6,7 +6,8 @@ const antiloop = require('../guardrails/antiloop.service');
 const businessHours = require('../conversation/business-hours');
 const agentService = require('../agent/agent.service');
 const { getChannel } = require('../config/channels');
-const { FALLBACK_AGENT_ID } = require('../config/agents.config');
+const { FALLBACK_AGENT_ID, jidToNumber } = require('../config/agents.config');
+const lidResolver = require('./lid.resolver');
 const { env } = require('../config/env');
 const curadoria = require('../curadoria/config.service');
 const clienteService = require('../clientes/cliente.service');
@@ -24,6 +25,10 @@ const realtime = require('../utils/realtime');
  *   evento -> sessao -> agente -> ativo? -> fromMe -> duplicidade -> anti-loop
  *          -> normalizar (texto/Whisper/visao) -> buffer 8s -> consolidar
  *          -> historico -> agente -> anti-loop de saida -> enviar -> persistir
+ *
+ * O que sai do numero tem caminho proprio: resposta digitada no aplicativo do
+ * celular entra no historico como mensagem do escritorio (`onOwnMessage`), e o
+ * eco das mensagens que o proprio sistema enviou e descartado antes disso.
  */
 
 /** Idempotencia: o indice unico garante que o segundo insert falhe. */
@@ -190,6 +195,149 @@ function registerBridge(io) {
 
     return part;
   }
+
+  // ------------------------------------------------ saida pelo aparelho
+
+  /**
+   * Resposta digitada no aplicativo do celular, nao no painel.
+   *
+   * O WhatsApp entrega em `messages.upsert` tudo o que sai do numero. O que
+   * este sistema mandou e descartado no manager; o que sobra foi uma pessoa do
+   * escritorio respondendo pelo aparelho — tipicamente com o agente pausado,
+   * que e exatamente quando o painel mais precisa mostrar a conversa inteira.
+   *
+   * Grava como mensagem de saida escrita por pessoa (`sentBy: 'human'`), do
+   * mesmo jeito que o envio pelo painel. Assim o historico, o resumo rolante e
+   * o contexto que o agente le ao voltar enxergam os dois lados da conversa.
+   */
+  async function registrarRespostaManual({ channelId, jid, msg, waMessageId, timestamp }) {
+    const agent = manager.agentFor(channelId);
+    if (!agent) return;
+
+    // Idempotencia: cobre a reentrega da fila e, depois de um restart, o eco de
+    // uma mensagem que o proprio sistema enviou (a lista em memoria se perde,
+    // o registro no banco nao).
+    if (!(await claimMessage({ channelId, waMessageId, chatId: jid }))) return;
+
+    const curada = curadoria.publicada(agent.id);
+
+    const part = await normalizer.normalize({
+      msg,
+      channelId,
+      chatId: jid,
+      sock: manager.socketFor(channelId),
+      conversationHint: await conversationService.recentHint(channelId, jid),
+      midia: {
+        audio: curada.audio?.habilitado,
+        imagem: curada.imagem?.habilitado,
+      },
+    });
+
+    if (!part) {
+      await markProcessed(channelId, [waMessageId], 'ignored', 'sem_conteudo');
+      return;
+    }
+
+    // O escritorio pode ter comecado a conversa pelo celular: sem isto, ela nao
+    // existiria na lista do painel ate o contato responder.
+    await conversationService.ensure({
+      channelId,
+      chatId: jid,
+      agent,
+      channelNumber: manager.getState(channelId).phoneNumber,
+    });
+
+    const contact = await agentService.getOrCreateContact({ channelId, jid, role: agent.role });
+
+    await agentService.persistParts({
+      channelId,
+      jid,
+      parts: [part],
+      batchId: agentService.newBatchId(),
+      startSeq: contact.messageCount + 1,
+      direction: 'out',
+      role: 'assistant',
+      sentBy: 'human',
+      // Hora em que foi enviada, nao hora em que este processo soube dela: a
+      // mensagem recuperada apos uma queda tem de cair no lugar certo da
+      // conversa.
+      createdAt: new Date(timestamp),
+    });
+
+    contact.messageCount += 1;
+    await contact.save();
+
+    await conversationService.patch(channelId, jid, { lastAgentMessageAt: new Date(timestamp) });
+
+    realtime.conversationMessage({
+      channelId,
+      chatId: jid,
+      mensagem: {
+        id: `wa-${waMessageId || timestamp}`,
+        direcao: 'out',
+        tipo: part.type,
+        texto: part.content || null,
+        transcricao: part.transcription || null,
+        descricaoImagem: part.description || null,
+        legenda: part.caption || null,
+        erroMidia: part.error || null,
+        autor: 'human',
+        operador: null,
+        tokens: 0,
+        em: new Date(timestamp).toISOString(),
+      },
+    });
+
+    // A ficha do cliente ja recebe o que o agente e o painel respondem; o que
+    // sai do celular tem de entrar pela mesma porta, senao a timeline mostra so
+    // metade da conversa.
+    const telefone = jidToNumber(jid) || lidResolver.resolver(jid);
+    if (telefone && agent.id !== FALLBACK_AGENT_ID) {
+      clienteService
+        .registrarInteracao({
+          telefone,
+          channelId,
+          chatId: jid,
+          direcao: 'out',
+          texto: part.content || part.transcription || part.caption || null,
+        })
+        .catch((error) =>
+          logger.warn({ err: error.message, channelId }, 'Falha ao atualizar a ficha do cliente')
+        );
+    }
+
+    await markProcessed(channelId, [waMessageId], 'processed', 'resposta_manual_no_aparelho');
+  }
+
+  manager.onOwnMessage = async (payload) => {
+    try {
+      await registrarRespostaManual(payload);
+    } catch (error) {
+      logger.error(
+        { channelId: payload.channelId, chatId: payload.jid, err: error.message },
+        'Falha ao registrar resposta enviada pelo aparelho'
+      );
+    }
+  };
+
+  /**
+   * Tudo o que sai por este sistema fica registrado com o id que o WhatsApp
+   * devolveu. E o que impede o eco de virar uma segunda bolha quando a lista em
+   * memoria do manager nao existe mais — depois de um restart, por exemplo.
+   */
+  manager.on('message:out', ({ channelId, jid, waMessageId }) => {
+    if (!waMessageId) return;
+    ProcessedMessage.create({
+      channelId,
+      waMessageId,
+      chatId: jid,
+      status: 'processed',
+      reason: 'enviada_pelo_sistema',
+      processedAt: new Date(),
+    }).catch(() => {});
+  });
+
+  // ------------------------------------------------ entrada de mensagens (cont.)
 
   manager.onMessage = async (payload) => {
     const { channelId, jid, msg, pushName, waMessageId, verifiedBizName, phoneNumber } = payload;

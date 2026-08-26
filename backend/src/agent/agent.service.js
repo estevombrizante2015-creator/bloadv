@@ -67,14 +67,37 @@ async function addTokens(contact, tokens) {
   inputGuard.addGlobalTokens(tokens);
 }
 
-/** Grava cada parte do lote preservando o conteudo original e o derivado. */
-async function persistParts({ channelId, jid, parts, batchId, startSeq }) {
+/**
+ * Grava cada parte do lote preservando o conteudo original e o derivado.
+ *
+ * `direction`/`role`/`sentBy` existem porque a mesma gravacao serve para a
+ * mensagem que chega e para a resposta que alguem do escritorio digita no
+ * celular: ela precisa entrar no historico com o mesmo formato de audio,
+ * imagem e legenda, senao o painel e o contexto do agente ficam com duas
+ * qualidades de registro.
+ */
+async function persistParts({
+  channelId,
+  jid,
+  parts,
+  batchId,
+  startSeq,
+  direction = 'in',
+  role = 'user',
+  sentBy,
+  createdAt,
+}) {
   const docs = parts.map((part, i) => ({
     channelId,
     jid,
     waMessageId: part.waMessageId,
-    direction: 'in',
-    role: 'user',
+    direction,
+    role,
+    ...(sentBy ? { sentBy } : {}),
+    // A ordem do historico e a data de gravacao. Numa mensagem recuperada da
+    // fila do WhatsApp, gravar "agora" jogaria para o fim da conversa algo que
+    // foi dito horas antes.
+    ...(createdAt ? { createdAt } : {}),
     type: part.type,
     text: part.content || part.transcription || part.caption || null,
     transcription: part.transcription || null,
