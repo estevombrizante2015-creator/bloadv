@@ -138,9 +138,16 @@ export interface PausedConversation {
   chatId: string;
   sessionId: string;
   phoneNumber?: string;
+  /** Telefone ja formatado para leitura. Null em chat por LID sem numero. */
+  numero?: string | null;
+  /** Nome do contato (`pushName`), quando o WhatsApp entregou algum. */
+  nome?: string | null;
+  isLid?: boolean;
+  identificador?: string | null;
   status: string;
   pausedReason?: string;
   pausedAt?: string;
+  lastUserMessageAt?: string;
   botSignals?: string[];
   loopCounter?: number;
 }

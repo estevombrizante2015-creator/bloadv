@@ -21,6 +21,7 @@ import {
 import { BrandLockup } from '@/components/Brand';
 import { useAuth } from '@/hooks/useAuth';
 import { useSocket } from '@/hooks/useSocket';
+import { motivoLegivel } from '@/lib/pausa';
 import {
   api,
   conversationsApi,
@@ -38,25 +39,6 @@ const STATUS_LABEL: Record<string, { texto: string; cor: string }> = {
   BOT_LOOP_DETECTED: { texto: 'Loop detectado', cor: 'bg-red-400/15 text-red-300' },
   CLOSED: { texto: 'Encerrada', cor: 'bg-navy-800 text-muted' },
 };
-
-/**
- * Por que o agente parou, em portugues.
- *
- * Os motivos sao chaves internas ("atendimento_humano") e apareciam cruas no
- * aviso da conversa. Quem le e um atendente, nao quem escreveu o codigo — e um
- * sublinhado no meio da frase e a marca de um sistema falando consigo mesmo.
- */
-const MOTIVO_DA_PAUSA: Record<string, string> = {
-  atendimento_humano: 'você assumiu o atendimento',
-  pausada_no_painel: 'pausada no painel',
-  possible_bot_loop: 'o outro lado parece ser automático',
-  resposta_repetida: 'o agente estava repetindo a mesma resposta',
-  violacao_guardrail_saida: 'a resposta foi barrada pelas regras',
-  erro_openai: 'houve uma falha técnica',
-};
-
-const motivoLegivel = (motivo: string | null) =>
-  motivo ? MOTIVO_DA_PAUSA[motivo] || motivo.replace(/_/g, ' ') : null;
 
 /**
  * O WhatsApp endereca muitos chats por LID (`1234@lid`), que NAO e o telefone.
@@ -141,6 +123,43 @@ export default function ConversasPage() {
     );
     return () => clearTimeout(timer);
   }, [busca, canalFiltro, carregar]);
+
+  /**
+   * Abre direto a conversa apontada pela URL (`/conversas?canal=..&chat=..`).
+   *
+   * E o link que sai da lista de conversas pausadas, no painel de conexoes:
+   * sem isto, quem clicava caia na lista geral e tinha de procurar a pessoa de
+   * novo — justamente a busca que o link deveria poupar.
+   *
+   * A leitura e de `window.location`, e nao de `useSearchParams`, para nao
+   * exigir um limite de Suspense em volta da pagina inteira (ver
+   * next/dist/docs/01-app/03-api-reference/04-functions/use-search-params.md).
+   * O efeito roda so no cliente, onde `window` existe.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const canal = params.get('canal');
+    const chat = params.get('chat');
+    if (!canal || !chat) return;
+
+    let cancelado = false;
+
+    // A conversa e a lista chegam juntas: `selecionada` e `detalhe` sao
+    // preenchidos de uma vez quando a resposta volta, sem estado de carga
+    // proprio — que exigiria um setState sincrono dentro do efeito.
+    conversationsApi
+      .detail(canal, chat)
+      .then((d) => {
+        if (cancelado || !d.conversa) return;
+        setSelecionada(d.conversa);
+        setDetalhe(d);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelado = true;
+    };
+  }, []);
 
   // Os numeros conectados viram as abas de segmentacao.
   useEffect(() => {

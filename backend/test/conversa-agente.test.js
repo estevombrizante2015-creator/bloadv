@@ -12,7 +12,7 @@ const clienteService = require('../src/clientes/cliente.service');
 const manager = require('../src/whatsapp/baileys.manager');
 const buffer = require('../src/conversation/buffer.service');
 const { registerBridge } = require('../src/whatsapp/bridge');
-const { Conversation, ProcessedMessage } = require('../src/models');
+const { Contact, Conversation, ProcessedMessage } = require('../src/models');
 
 /**
  * LIGAR E DESLIGAR O AGENTE POR PESSOA
@@ -113,6 +113,75 @@ test('o estado pausado nao vaza entre conversas do mesmo canal', () => {
   const pausadas = conversas.filter((c) => conversationService.isPaused(c));
   assert.equal(pausadas.length, 1);
   assert.equal(pausadas[0].chatId, 'a@s.whatsapp.net');
+});
+
+// ------------------------------- a fila de conversas pausadas
+
+test('a lista de pausadas leva o nome de quem esta do outro lado', async () => {
+  /**
+   * A lista devolvia o documento cru da conversa, e o painel exibia uma coluna
+   * de telefones. Para decidir qual atendimento retomar primeiro era preciso
+   * abrir conversa por conversa — o nome mora no contato, nao na conversa.
+   */
+  const originalConversa = Conversation.find;
+  const originalContato = Contact.find;
+
+  Conversation.find = () => ({
+    sort: () => ({
+      limit: () => ({
+        lean: async () => [
+          {
+            _id: 'c1',
+            sessionId: CANAL,
+            chatId: PESSOA,
+            phoneNumber: '5519996383884',
+            status: 'PAUSED',
+            pausedReason: 'atendimento_humano',
+          },
+        ],
+      }),
+    }),
+  });
+
+  Contact.find = () => ({
+    lean: async () => [{ channelId: CANAL, jid: PESSOA, pushName: 'Maria Souza' }],
+  });
+
+  try {
+    const [pausada] = await conversationService.listPaused();
+
+    assert.equal(pausada.nome, 'Maria Souza');
+    assert.equal(pausada.numero, '+55 (19) 99638-3884', 'o numero vai formatado, nao cru');
+    assert.equal(pausada.isLid, false);
+    // O que ja existia continua: o painel usa isto para retomar a conversa.
+    assert.equal(pausada.sessionId, CANAL);
+    assert.equal(pausada.chatId, PESSOA);
+  } finally {
+    Conversation.find = originalConversa;
+    Contact.find = originalContato;
+  }
+});
+
+test('lista vazia nao consulta contatos', async () => {
+  // `Contact.find({ $or: [] })` e um filtro invalido no Mongo: sem a guarda, a
+  // tela quebraria justamente quando nao ha nenhuma conversa parada.
+  const originalConversa = Conversation.find;
+  const originalContato = Contact.find;
+  let consultouContatos = false;
+
+  Conversation.find = () => ({ sort: () => ({ limit: () => ({ lean: async () => [] }) }) });
+  Contact.find = () => {
+    consultouContatos = true;
+    return { lean: async () => [] };
+  };
+
+  try {
+    assert.deepEqual(await conversationService.listPaused(), []);
+    assert.equal(consultouContatos, false);
+  } finally {
+    Conversation.find = originalConversa;
+    Contact.find = originalContato;
+  }
 });
 
 // ------------------------------- quem responde assume o atendimento

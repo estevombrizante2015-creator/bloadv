@@ -6,7 +6,6 @@ import {
   Bot,
   Loader2,
   LogOut,
-  PlayCircle,
   RefreshCw,
   MessagesSquare,
   ShieldCheck,
@@ -18,6 +17,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import ConnectionCard from '@/components/ConnectionCard';
+import ConversasPausadas from '@/components/ConversasPausadas';
 import SaudeNumeros, { resumoSaude } from '@/components/SaudeNumeros';
 import { BrandLockup } from '@/components/Brand';
 import { useChannels } from '@/hooks/useChannels';
@@ -278,7 +278,9 @@ export default function ConnectionsPage() {
           <Stat
             label="Conversas pausadas"
             value={String(paused.length)}
-            hint={paused.length ? 'loop ou handoff' : undefined}
+            // "loop ou handoff" nao dizia o que fazer. O numero aqui e uma
+            // fila: sao pessoas que so recebem resposta se alguem responder.
+            hint={paused.length ? 'esperando uma pessoa responder' : undefined}
           />
         </section>
 
@@ -362,35 +364,11 @@ export default function ConnectionsPage() {
         {/* conversas pausadas */}
         {paused.length > 0 && (
           <Section icon={<TriangleAlert size={15} />} title="Conversas pausadas">
-            <div className="divide-y divide-navy-800 overflow-hidden rounded-xl border border-navy-800 bg-navy-900">
-              {paused.map((conversation) => (
-                <div
-                  key={conversation._id}
-                  className="flex items-center justify-between gap-3 px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm tabular-nums text-cream">
-                      {conversation.phoneNumber
-                        ? `+${conversation.phoneNumber}`
-                        : conversation.chatId}
-                    </p>
-                    <p className="truncate text-[11px] text-muted">
-                      {conversation.pausedReason ?? conversation.status}
-                      {conversation.botSignals?.length
-                        ? ` · sinais: ${conversation.botSignals.join(', ')}`
-                        : ''}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => resume(conversation.sessionId, conversation.chatId)}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-navy-800 px-3 py-1.5 text-xs text-muted transition-colors hover:border-gold-500/40 hover:text-gold-300"
-                  >
-                    <PlayCircle size={14} />
-                    Retomar
-                  </button>
-                </div>
-              ))}
-            </div>
+            <ConversasPausadas
+              conversas={paused}
+              canais={channels.map((c) => ({ id: c.id, label: c.label }))}
+              onRetomar={resume}
+            />
           </Section>
         )}
 

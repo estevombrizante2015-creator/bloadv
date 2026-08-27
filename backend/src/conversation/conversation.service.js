@@ -1,5 +1,5 @@
 const { Conversation, Message, Contact } = require('../models');
-const { jidToNumber, isLidJid, jidToIdentifier } = require('../config/agents.config');
+const { jidToNumber, isLidJid, jidToIdentifier, formatNumber } = require('../config/agents.config');
 const lidResolver = require('../whatsapp/lid.resolver');
 const logger = require('../utils/logger');
 const { EV } = require('../utils/events');
@@ -165,15 +165,53 @@ async function recentHint(channelId, chatId, limit = 3) {
     .join(' | ');
 }
 
-/** Conversas pausadas de um canal, para o painel. */
-const listPaused = (channelId) =>
-  Conversation.find({
+/**
+ * Conversas pausadas de um canal, para o painel.
+ *
+ * Vai junto QUEM e a pessoa. A lista devolvia so o documento da conversa, e o
+ * painel exibia uma coluna de telefones crus: para decidir qual atendimento
+ * retomar primeiro, quem opera tinha de abrir uma por uma. O nome mora no
+ * contato (`pushName`), nao na conversa — dai a juncao aqui, em uma consulta
+ * so para a pagina inteira.
+ */
+async function listPaused(channelId) {
+  const conversas = await Conversation.find({
     ...(channelId ? { sessionId: channelId } : {}),
     status: { $in: [...PAUSED_STATUSES] },
   })
     .sort({ pausedAt: -1 })
     .limit(50)
     .lean();
+
+  if (!conversas.length) return [];
+
+  const contatos = await Contact.find(
+    { $or: conversas.map((c) => ({ channelId: c.sessionId, jid: c.chatId })) },
+    { channelId: 1, jid: 1, pushName: 1 }
+  ).lean();
+
+  const porChave = new Map(contatos.map((c) => [`${c.channelId}:${c.jid}`, c]));
+
+  return conversas.map((conversa) => {
+    const contato = porChave.get(`${conversa.sessionId}:${conversa.chatId}`);
+
+    // Conversas gravadas antes de o telefone aparecer nao tem `phoneNumber`; o
+    // vinculo aprendido depois resolve sem precisar de migracao.
+    const numero =
+      conversa.phoneNumber || lidResolver.resolver(conversa.chatId) || jidToNumber(conversa.chatId);
+
+    return {
+      ...conversa,
+      nome: contato?.pushName || conversa.pushName || null,
+      phoneNumber: numero || null,
+      numero: numero ? formatNumber(numero) : null,
+      // Chat por LID cujo telefone ainda nao apareceu: melhor dizer isso do que
+      // formatar o identificador opaco como se fosse um telefone.
+      isLid: Boolean(conversa.isLid) && !numero,
+      identificador: conversa.lid || null,
+    };
+  });
+}
 
 module.exports = {
   ensure,
