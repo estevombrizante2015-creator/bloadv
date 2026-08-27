@@ -31,6 +31,13 @@ const realtime = require('../utils/realtime');
  * eco das mensagens que o proprio sistema enviou e descartado antes disso.
  */
 
+/**
+ * Motivo da pausa quando uma pessoa do escritorio assume a conversa. Mesmo
+ * valor gravado pelo envio via painel — o painel e o celular tem de aparecer
+ * como a mesma coisa na tela e no log.
+ */
+const MOTIVO_ATENDIMENTO_HUMANO = 'atendimento_humano';
+
 /** Idempotencia: o indice unico garante que o segundo insert falhe. */
 async function claimMessage({ channelId, waMessageId, chatId }) {
   if (!waMessageId) return true; // sem id nao da para deduplicar; segue o fluxo
@@ -196,6 +203,37 @@ function registerBridge(io) {
     return part;
   }
 
+  /**
+   * Grava um lote que ficou no buffer e nao vai ser respondido.
+   *
+   * As partes ja estao normalizadas e ja apareceram no painel; o que faltava
+   * era o banco. No caminho normal quem persiste e o `handleBatch`, entao tudo
+   * o que era descartado antes dele sumia do historico — e sumia justamente
+   * quando alguem assumia a conversa no meio de uma rajada, que e quando o
+   * historico completo mais importa.
+   */
+  async function registrarLoteSemResponder({ channelId, chatId, parts, agent }) {
+    if (!parts?.length) return;
+
+    const contact = await agentService.getOrCreateContact({
+      channelId,
+      jid: chatId,
+      role: agent.role,
+    });
+
+    await agentService.persistParts({
+      channelId,
+      jid: chatId,
+      parts,
+      batchId: agentService.newBatchId(),
+      startSeq: contact.messageCount + 1,
+    });
+
+    contact.messageCount += parts.length;
+    contact.lastMessageAt = new Date();
+    await contact.save();
+  }
+
   // ------------------------------------------------ saida pelo aparelho
 
   /**
@@ -240,7 +278,7 @@ function registerBridge(io) {
 
     // O escritorio pode ter comecado a conversa pelo celular: sem isto, ela nao
     // existiria na lista do painel ate o contato responder.
-    await conversationService.ensure({
+    const conversation = await conversationService.ensure({
       channelId,
       chatId: jid,
       agent,
@@ -268,6 +306,28 @@ function registerBridge(io) {
     await contact.save();
 
     await conversationService.patch(channelId, jid, { lastAgentMessageAt: new Date(timestamp) });
+
+    /**
+     * Quem responde assume o atendimento — pelo celular tambem.
+     *
+     * Escrever pelo painel ja pausava o agente nesta conversa; pelo aparelho,
+     * nao. O advogado respondia do celular e o agente continuava atuando em
+     * paralelo, os dois falando com a mesma pessoa ao mesmo tempo — que e
+     * justamente o que a pausa do painel existe para evitar.
+     *
+     * Uma conversa ja pausada nao e tocada: sobrescrever trocaria o motivo
+     * (loop de bot, pedido do contato) por "atendimento_humano" e apagaria a
+     * razao real do silencio.
+     */
+    if (!conversationService.isPaused(conversation)) {
+      await conversationService.pause(channelId, jid, MOTIVO_ATENDIMENTO_HUMANO);
+      realtime.conversationUpdate({
+        channelId,
+        chatId: jid,
+        status: Conversation.STATUS.PAUSED,
+        pausedReason: MOTIVO_ATENDIMENTO_HUMANO,
+      });
+    }
 
     realtime.conversationMessage({
       channelId,
@@ -512,20 +572,41 @@ function registerBridge(io) {
 
     const waIds = parts.map((p) => p.waMessageId);
 
-    const conversation = await conversationService.patch(channelId, chatId, {
+    /**
+     * A pausa e conferida ANTES de marcar PROCESSING.
+     *
+     * `patch` devolve o documento ja alterado, entao a checagem que existia
+     * aqui olhava para o status que ela mesma acabara de escrever e nunca era
+     * verdadeira. Na pratica: o contato mandava a mensagem, o advogado assumia
+     * dentro da janela do buffer e o agente respondia assim mesmo, alguns
+     * segundos depois — e o `finally` ainda devolvia a conversa para
+     * WAITING_USER, apagando a pausa.
+     */
+    const antes = await conversationService.get(channelId, chatId);
+
+    if (conversationService.isPaused(antes)) {
+      // O estado do buffer e limpo primeiro: se a gravacao abaixo falhar, o
+      // painel nao pode ficar mostrando "buffer aberto" para sempre.
+      await conversationService.patch(channelId, chatId, {
+        processing: false,
+        bufferStatus: 'idle',
+        bufferSize: 0,
+      });
+      await markProcessed(channelId, waIds, 'ignored', antes.pausedReason || antes.status);
+
+      // O que o contato disse continua valendo. Sem gravar aqui, assumir o
+      // atendimento no meio de uma rajada apagaria as mensagens que ainda
+      // estavam no buffer: elas nunca chegaram ao banco.
+      await registrarLoteSemResponder({ channelId, chatId, parts, agent });
+      return;
+    }
+
+    await conversationService.patch(channelId, chatId, {
       status: Conversation.STATUS.PROCESSING,
       bufferStatus: 'flushing',
       processing: true,
       processingSince: new Date(),
     });
-
-    if (conversationService.isPaused(conversation)) {
-      await conversationService.patch(channelId, chatId, {
-        processing: false,
-        bufferStatus: 'idle',
-      });
-      return;
-    }
 
     try {
       const result = await agentService.handleBatch({
@@ -623,8 +704,18 @@ function registerBridge(io) {
       );
       await markProcessed(channelId, waIds, 'failed', error.message);
     } finally {
+      /**
+       * Se alguem assumiu o atendimento enquanto o modelo respondia — pelo
+       * painel ou pelo celular —, a pausa vale mais que o fim do
+       * processamento. Devolver o status para WAITING_USER aqui apagaria a
+       * pausa que acabara de ser pedida, e o agente voltaria a responder na
+       * mensagem seguinte como se nada tivesse acontecido.
+       */
+      const agora = await conversationService.get(channelId, chatId);
+      const pausada = conversationService.isPaused(agora);
+
       await conversationService.patch(channelId, chatId, {
-        status: Conversation.STATUS.WAITING_USER,
+        ...(pausada ? {} : { status: Conversation.STATUS.WAITING_USER }),
         bufferStatus: 'idle',
         bufferSize: 0,
         processing: false,

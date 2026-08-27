@@ -6,7 +6,13 @@ process.env.MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/what
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'segredo-de-teste';
 
 const conversationService = require('../src/conversation/conversation.service');
-const { Conversation } = require('../src/models');
+const agentService = require('../src/agent/agent.service');
+const curadoria = require('../src/curadoria/config.service');
+const clienteService = require('../src/clientes/cliente.service');
+const manager = require('../src/whatsapp/baileys.manager');
+const buffer = require('../src/conversation/buffer.service');
+const { registerBridge } = require('../src/whatsapp/bridge');
+const { Conversation, ProcessedMessage } = require('../src/models');
 
 /**
  * LIGAR E DESLIGAR O AGENTE POR PESSOA
@@ -107,4 +113,137 @@ test('o estado pausado nao vaza entre conversas do mesmo canal', () => {
   const pausadas = conversas.filter((c) => conversationService.isPaused(c));
   assert.equal(pausadas.length, 1);
   assert.equal(pausadas[0].chatId, 'a@s.whatsapp.net');
+});
+
+// ------------------------------- quem responde assume o atendimento
+
+/**
+ * O bridge conversa com Mongo em todo passo. Aqui cada dependencia vira um
+ * espiao: o que esta sob teste e a DECISAO de calar o agente, nao a gravacao.
+ */
+function comBridgeEspiao(ajustes = {}) {
+  const original = [];
+  const trocar = (obj, chave, valor) => {
+    const antigo = obj[chave];
+    original.push(() => {
+      obj[chave] = antigo;
+    });
+    obj[chave] = valor;
+  };
+
+  const registro = { pausas: [], lotesGravados: [], respostasDoAgente: 0 };
+
+  trocar(conversationService, 'ensure', async () => ajustes.conversa || { status: 'WAITING_USER' });
+  trocar(conversationService, 'get', async () => ajustes.conversa || { status: 'WAITING_USER' });
+  trocar(conversationService, 'recentHint', async () => null);
+  trocar(conversationService, 'patch', async () => ({}));
+  trocar(conversationService, 'pause', async (canal, chat, motivo) => {
+    registro.pausas.push({ canal, chat, motivo });
+    return {};
+  });
+
+  trocar(agentService, 'getOrCreateContact', async () => ({
+    messageCount: 3,
+    save: async () => {},
+  }));
+  trocar(agentService, 'persistParts', async ({ parts, direction, sentBy }) => {
+    registro.lotesGravados.push({ partes: parts.length, direction, sentBy });
+  });
+  trocar(agentService, 'handleBatch', async () => {
+    registro.respostasDoAgente += 1;
+    return { reply: null, tier: null, meta: {} };
+  });
+
+  trocar(curadoria, 'publicada', () => ({}));
+  trocar(curadoria, 'estaAtivo', () => true);
+  trocar(clienteService, 'registrarInteracao', async () => {});
+
+  trocar(ProcessedMessage, 'create', async () => ({}));
+  trocar(ProcessedMessage, 'updateMany', () => Promise.resolve({}));
+
+  trocar(manager, 'agentFor', () => ({ id: 'teste', role: 'leads', status: 'ativo' }));
+  trocar(manager, 'getState', () => ({ phoneNumber: '5511999990000' }));
+  trocar(manager, 'socketFor', () => null);
+
+  registerBridge(null);
+
+  return { registro, restaurar: () => original.forEach((f) => f()) };
+}
+
+const mensagemDoAparelho = {
+  channelId: CANAL,
+  jid: PESSOA,
+  msg: {
+    key: { remoteJid: PESSOA, id: 'RESPOSTA-DO-ADVOGADO', fromMe: true },
+    message: { conversation: 'Bom dia, ja estou vendo seu caso.' },
+    messageTimestamp: Math.floor(Date.now() / 1000),
+  },
+  waMessageId: 'RESPOSTA-DO-ADVOGADO',
+  timestamp: Date.now(),
+};
+
+test('responder pelo celular pausa o agente naquela conversa', async () => {
+  // Escrever pelo painel ja pausava. Pelo aparelho, nao: o advogado respondia
+  // do celular e o agente seguia atuando, os dois falando com a mesma pessoa.
+  const { registro, restaurar } = comBridgeEspiao();
+
+  try {
+    await manager.onOwnMessage(mensagemDoAparelho);
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(registro.pausas.length, 1, 'quem responde assume o atendimento');
+  assert.equal(registro.pausas[0].canal, CANAL);
+  assert.equal(registro.pausas[0].chat, PESSOA, 'a pausa e desta conversa, nao do canal');
+  assert.equal(registro.pausas[0].motivo, 'atendimento_humano');
+
+  // E a resposta entra no historico como mensagem de saida escrita por pessoa.
+  assert.deepEqual(registro.lotesGravados, [{ partes: 1, direction: 'out', sentBy: 'human' }]);
+});
+
+test('conversa ja pausada nao tem o motivo trocado', async () => {
+  // Sobrescrever apagaria a razao real do silencio (loop de bot, pedido do
+  // contato) e o painel passaria a mostrar "atendimento_humano" no lugar.
+  const { registro, restaurar } = comBridgeEspiao({
+    conversa: { status: 'BOT_LOOP_DETECTED', pausedReason: 'loop_de_bot' },
+  });
+
+  try {
+    await manager.onOwnMessage(mensagemDoAparelho);
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(registro.pausas.length, 0);
+});
+
+test('mensagem que ficou no buffer nao e respondida depois da pausa', async () => {
+  /**
+   * A checagem de pausa no flush vinha DEPOIS de marcar a conversa como
+   * PROCESSING, e lia o documento que ela mesma acabara de escrever: nunca era
+   * verdadeira. O contato mandava a mensagem, o advogado assumia dentro da
+   * janela do buffer, e o agente respondia assim mesmo alguns segundos depois.
+   */
+  const { registro, restaurar } = comBridgeEspiao({
+    conversa: { status: 'PAUSED', pausedReason: 'atendimento_humano' },
+  });
+
+  try {
+    await buffer.onFlush({
+      channelId: CANAL,
+      chatId: PESSOA,
+      parts: [{ type: 'text', content: 'e o meu caso?', waMessageId: 'DO-CONTATO' }],
+      meta: {},
+    });
+  } finally {
+    restaurar();
+  }
+
+  assert.equal(registro.respostasDoAgente, 0, 'o agente esta calado nesta conversa');
+  // Mas o que o contato disse continua no historico: quem persistia era o
+  // proprio handleBatch, entao o lote descartado antes dele sumia do banco.
+  assert.deepEqual(registro.lotesGravados, [
+    { partes: 1, direction: undefined, sentBy: undefined },
+  ]);
 });
