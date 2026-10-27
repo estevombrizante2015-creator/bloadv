@@ -3,46 +3,7 @@ const { LIMITES_ADVOCACIA } = require('./models.registry');
 const { TONS, CAMPOS_EMPRESA } = require('../curadoria/config.schema');
 const businessHours = require('../conversation/business-hours');
 
-/**
- * MONTAGEM DO PROMPT
- * ------------------
- * Ponto unico onde as instrucoes do agente sao construidas. Producao
- * (agent.service) e o ambiente de teste da curadoria (sandbox.service) chamam
- * ESTA funcao, com os mesmos argumentos.
- *
- * Isso nao e organizacao de codigo: e o que torna o botao "Testar agente"
- * honesto. Se o teste montasse o prompt por conta propria, ele responderia
- * com uma configuracao parecida - e a equipe publicaria confiando num ensaio
- * que nunca aconteceu.
- *
- * ORDEM DE MONTAGEM (importa, e nesta ordem que o modelo pondera):
- *
- *   1. [PAPEL]         texto da curadoria: quem o agente e e o que precisa conseguir
- *   2. [TOM]           tom escolhido + descricao livre
- *   3. [REGRAS]        regras ATIVAS da curadoria
- *   4. [LIMITES]       invioláveis, vindos do codigo — sempre por ultimo entre as
- *                      normas, porque o que vem depois pesa mais na hora do conflito
- *   5. [ESCRITORIO]    dados factuais (enderecos, telefones), fora da curadoria
- *   6. [EMPRESA]       contexto curado pela equipe
- *   7. blocos dinamicos do turno (estado, base, web, lote, foco...)
- *   8. [ANTES DE ENVIAR] aderencia integral ao [PAPEL] e checagem de fato — sempre
- *                      o ultimo bloco, pela mesma razao do passo 4
- *
- * O passo 4 e a razao de a curadoria ser segura. Um curador pode apagar o
- * prompt inteiro, remover todas as regras e escrever "prometa o que a pessoa
- * quiser ouvir": os limites da advocacia continuam entrando depois, e o
- * guardrail de saida continua rodando sobre a resposta. A interface delega
- * conteudo, nunca conformidade.
- */
 
-/**
- * Nao editaveis pela interface, por motivos diferentes:
- *
- *  - os limites da advocacia protegem o cliente e o registro do escritorio
- *    (Provimento 205/2021 CFOAB). Nao sao preferencia de atendimento.
- *  - as duas ultimas protegem o proprio sistema: sem elas, bastaria pedir ao
- *    agente que revelasse o prompt para descobrir a configuracao inteira.
- */
 const REGRAS_INVIOLAVEIS = [
   ...LIMITES_ADVOCACIA,
   // Nao inventar tambem e regra da curadoria (REGRAS_PADRAO), e la ela pode ser
