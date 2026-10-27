@@ -31,19 +31,20 @@ function mediaNode(message, type) {
 function sizeLimitFor(type) {
   if (type === 'audio') return env.media.audioMaxBytes;
   if (type === 'image') return env.media.imageMaxBytes;
-  return env.media.imageMaxBytes;
+  return env.media.fileMaxBytes;
 }
 
 /**
  * @returns {Promise<{ok: boolean, buffer?: Buffer, mimetype?: string, bytes?: number, error?: string}>}
  */
-async function download({ msg, type, sock, channelId }) {
+async function download({ msg, type, sock, channelId, inner }) {
   if (!env.media.enabled) {
     return { ok: false, error: 'midia desabilitada por configuracao' };
   }
 
-  const inner = msg.message?.ephemeralMessage?.message || msg.message;
-  const node = mediaNode(inner, type);
+  // `inner` e a mensagem ja desembrulhada pelo normalizador (efemera, view
+  // once, documento com legenda). Sem ele, so a efemera e reconhecida.
+  const node = mediaNode(inner || msg.message?.ephemeralMessage?.message || msg.message, type);
 
   if (!node) return { ok: false, error: `mensagem sem no de midia para tipo ${type}` };
 
@@ -79,6 +80,7 @@ async function download({ msg, type, sock, channelId }) {
       mimetype: node.mimetype || null,
       bytes: buffer.length,
       seconds: node.seconds || null,
+      fileName: node.fileName || null,
     };
   } catch (error) {
     logger.warn(

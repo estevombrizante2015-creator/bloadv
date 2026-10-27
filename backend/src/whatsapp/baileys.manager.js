@@ -710,6 +710,31 @@ class BaileysManager extends EventEmitter {
     return sent;
   }
 
+  /**
+   * Envia midia ja montada no formato do Baileys (`{ image }`, `{ audio, ptt }`,
+   * `{ video }`, `{ document, fileName }`). Sem pausa de digitacao: quem anexa
+   * um arquivo no painel ja esperou o upload.
+   */
+  async sendMedia(channelId, jid, content) {
+    const state = this.getState(channelId);
+    if (!state.sock || state.status !== 'connected') {
+      throw new Error(`Canal ${channelId} nao esta conectado`);
+    }
+
+    const sent = await state.sock.sendMessage(jid, content);
+
+    // Mesmo motivo do sendText: o eco nao pode virar resposta "do celular".
+    this.registrarEnvioProprio(sent?.key?.id);
+
+    this.emit('message:out', {
+      channelId,
+      jid,
+      text: content.caption || '',
+      waMessageId: sent?.key?.id,
+    });
+    return sent;
+  }
+
   // ------------------------------------------------------------ ciclo de vida
 
   /**

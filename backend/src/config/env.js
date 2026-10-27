@@ -136,6 +136,9 @@ const env = {
       : 'high',
     visionMaxTokens: int(process.env.VISION_MAX_TOKENS, 700),
     imageMaxBytes: int(process.env.IMAGE_MAX_BYTES, 8 * 1024 * 1024),
+    // Video, documento e figurinha recebidos, e qualquer arquivo enviado pelo
+    // painel. 16 MB e o teto de midia do proprio WhatsApp.
+    fileMaxBytes: int(process.env.MEDIA_FILE_MAX_BYTES, 16 * 1024 * 1024),
   },
 
   buffer: {

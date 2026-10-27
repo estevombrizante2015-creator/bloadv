@@ -317,6 +317,15 @@ export interface ConversationSummary {
   updatedAt: string;
 }
 
+/** Arquivo guardado de uma mensagem: audio, imagem, video ou documento. */
+export interface MidiaInfo {
+  id: string;
+  mimetype: string | null;
+  bytes: number | null;
+  nome: string | null;
+  segundos: number | null;
+}
+
 export interface ConversationMessage {
   id: string;
   direcao: 'in' | 'out';
@@ -326,6 +335,7 @@ export interface ConversationMessage {
   descricaoImagem: string | null;
   legenda: string | null;
   erroMidia: string | null;
+  midia?: MidiaInfo | null;
   tier: string | null;
   autor?: 'agent' | 'human';
   operador?: string | null;
@@ -369,6 +379,59 @@ export const conversationsApi = {
       method: 'POST',
       body: JSON.stringify({ text, pauseAgent }),
     }),
+  /**
+   * Envia um arquivo. O corpo vai cru, sem base64; nome, tipo e legenda vao na
+   * query. `voz` marca audio gravado no painel: o servidor converte para
+   * nota de voz do WhatsApp.
+   */
+  sendMedia: (
+    channelId: string,
+    chatId: string,
+    arquivo: Blob,
+    opcoes: {
+      mimetype: string;
+      nome: string;
+      legenda?: string;
+      voz?: boolean;
+      segundos?: number;
+      pauseAgent?: boolean;
+    }
+  ) => {
+    const query = new URLSearchParams({
+      mimetype: opcoes.mimetype || 'application/octet-stream',
+      nome: opcoes.nome,
+      pauseAgent: opcoes.pauseAgent === false ? '0' : '1',
+      ...(opcoes.legenda ? { legenda: opcoes.legenda } : {}),
+      ...(opcoes.voz ? { voz: '1' } : {}),
+      ...(opcoes.segundos ? { segundos: String(Math.round(opcoes.segundos)) } : {}),
+    });
+    return request<{
+      enviada: boolean;
+      agentePausado: boolean;
+      mensagem: ConversationMessage;
+    }>(`/api/conversations/${channelId}/${encodeURIComponent(chatId)}/media?${query}`, {
+      method: 'POST',
+      body: arquivo,
+      headers: { 'Content-Type': 'application/octet-stream' },
+    });
+  },
+
+  /**
+   * O arquivo de uma mensagem. Vem por fetch autenticado, como o resto da API:
+   * token na URL de um <img> acabaria em log e no historico do navegador.
+   */
+  midia: async (fileId: string): Promise<Blob> => {
+    const response = await fetch(`${API_URL}/api/midias/${fileId}`, {
+      headers: { ...authHeader() },
+    });
+    if (response.status === 401) {
+      setToken(null);
+      throw new UnauthorizedError();
+    }
+    if (!response.ok) throw new Error(`Arquivo indisponivel (${response.status})`);
+    return response.blob();
+  },
+
   resume: (channelId: string, chatId: string) =>
     request<ConversationSummary>(
       `/api/conversations/${channelId}/${encodeURIComponent(chatId)}/resume`,

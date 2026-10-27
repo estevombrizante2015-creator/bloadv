@@ -38,6 +38,18 @@ const realtime = require('../utils/realtime');
  */
 const MOTIVO_ATENDIMENTO_HUMANO = 'atendimento_humano';
 
+/** O arquivo da parte, no formato que o painel usa para exibi-lo. */
+const midiaDaParte = (part) =>
+  part.mediaFileId
+    ? {
+        id: part.mediaFileId.toString(),
+        mimetype: part.mediaMimeType || null,
+        bytes: part.mediaBytes || null,
+        nome: part.mediaFileName || null,
+        segundos: part.seconds || null,
+      }
+    : null;
+
 /** Idempotencia: o indice unico garante que o segundo insert falhe. */
 async function claimMessage({ channelId, waMessageId, chatId }) {
   if (!waMessageId) return true; // sem id nao da para deduplicar; segue o fluxo
@@ -108,12 +120,13 @@ function registerBridge(io) {
       mensagem: {
         id: `wa-${waMessageId || part.timestamp}`,
         direcao: 'in',
-        tipo: part.type,
+        tipo: part.originalType || part.type,
         texto: part.content || null,
         transcricao: part.transcription || null,
         descricaoImagem: part.description || null,
         legenda: part.caption || null,
         erroMidia: part.error || null,
+        midia: midiaDaParte(part),
         autor: 'contact',
         tokens: 0,
         em: new Date(part.timestamp).toISOString(),
@@ -150,7 +163,8 @@ function registerBridge(io) {
    */
   async function registrarSemResponder({ channelId, jid, msg, pushName, phoneNumber, agent, curada, motivo, waMessageId }) {
     // Em loop de bot ninguem esta lendo e a outra ponta e suspeita de ser
-    // automatica: registra o que chegou, mas nao paga Whisper nem visao.
+    // automatica: registra o que chegou, mas nao paga Whisper nem visao — nem
+    // guarda arquivo, que um robo mandaria sem parar.
     const interpretar = motivo !== 'loop_de_bot';
 
     const part = await normalizer.normalize({
@@ -162,6 +176,7 @@ function registerBridge(io) {
       midia: {
         audio: interpretar && curada.audio?.habilitado,
         imagem: interpretar && curada.imagem?.habilitado,
+        guardar: interpretar,
       },
     });
 
@@ -269,6 +284,7 @@ function registerBridge(io) {
         audio: curada.audio?.habilitado,
         imagem: curada.imagem?.habilitado,
       },
+      origem: 'escritorio',
     });
 
     if (!part) {
@@ -335,12 +351,13 @@ function registerBridge(io) {
       mensagem: {
         id: `wa-${waMessageId || timestamp}`,
         direcao: 'out',
-        tipo: part.type,
+        tipo: part.originalType || part.type,
         texto: part.content || null,
         transcricao: part.transcription || null,
         descricaoImagem: part.description || null,
         legenda: part.caption || null,
         erroMidia: part.error || null,
+        midia: midiaDaParte(part),
         autor: 'human',
         operador: null,
         tokens: 0,

@@ -5,20 +5,28 @@ import Link from 'next/link';
 import {
   ArrowLeft,
   Bot,
+  Contact,
+  Download,
+  FileText,
   Loader2,
+  MapPin,
   MessageSquare,
   Mic,
   Image as ImageIcon,
+  Paperclip,
   PlayCircle,
   Search,
-  Send,
   ShieldAlert,
+  Sticker,
   Trash2,
   TriangleAlert,
   User,
   UserCog,
+  Video,
 } from 'lucide-react';
 import { BrandLockup } from '@/components/Brand';
+import { Compositor, type Envio } from '@/components/conversas/Compositor';
+import { baixarMidia, MidiaDaMensagem } from '@/components/conversas/Midia';
 import { useAuth } from '@/hooks/useAuth';
 import { useSocket } from '@/hooks/useSocket';
 import { motivoLegivel } from '@/lib/pausa';
@@ -52,6 +60,20 @@ const STATUS_LABEL: Record<string, { texto: string; cor: string }> = {
 const identificacao = (c: ConversationSummary) =>
   c.numero ?? (c.isLid ? `ID ${c.identificador}` : c.chatId);
 
+/**
+ * Junta mensagens novas a lista sem duplicar. A mesma mensagem chega duas
+ * vezes — pela resposta do envio e pelo socket, em qualquer ordem — e volta
+ * de novo quando a transcricao de um audio fica pronta: o mesmo id substitui.
+ */
+const mesclarMensagens = (atuais: ConversationMessage[], novas: ConversationMessage[]) => {
+  let lista = atuais;
+  for (const nova of novas) {
+    const i = lista.findIndex((m) => m.id === nova.id);
+    lista = i === -1 ? [...lista, nova] : lista.map((m, j) => (j === i ? { ...m, ...nova } : m));
+  }
+  return lista;
+};
+
 const dataHora = (iso: string | null) =>
   iso
     ? new Date(iso).toLocaleString('pt-BR', {
@@ -78,8 +100,8 @@ export default function ConversasPage() {
   const [detalhe, setDetalhe] = useState<ConversationDetail | null>(null);
   const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
   const [confirmandoExclusao, setConfirmandoExclusao] = useState(false);
-  const [rascunho, setRascunho] = useState('');
   const [enviando, setEnviando] = useState(false);
+  const [baixandoTodos, setBaixandoTodos] = useState(false);
   const [erroEnvio, setErroEnvio] = useState<string | null>(null);
   const [alternandoAgente, setAlternandoAgente] = useState(false);
   /** Enviar assume o atendimento? Fica ligado; desligar serve para so complementar. */
@@ -185,18 +207,20 @@ export default function ConversasPage() {
       chatId: string;
       pushName?: string;
       mensagem: ConversationMessage;
+      /** Mensagem que ja existe e mudou (transcricao de audio pronta). */
+      atualizacao?: boolean;
     }) => {
       // So anexa se for a conversa que esta aberta na tela.
       setSelecionada((atual) => {
         if (atual && atual.channelId === payload.channelId && atual.chatId === payload.chatId) {
           setDetalhe((d) =>
-            d && !d.mensagens.some((m) => m.id === payload.mensagem.id)
-              ? { ...d, mensagens: [...d.mensagens, payload.mensagem] }
-              : d
+            d ? { ...d, mensagens: mesclarMensagens(d.mensagens, [payload.mensagem]) } : d
           );
         }
         return atual;
       });
+
+      if (payload.atualizacao) return;
 
       // A lista sempre reflete o movimento, mesmo em conversa nao aberta.
       setLista((prev) => {
@@ -255,7 +279,6 @@ export default function ConversasPage() {
     setSelecionada(conversa);
     setDetalhe(null);
     setConfirmandoExclusao(false);
-    setRascunho('');
     setErroEnvio(null);
     setCarregandoDetalhe(true);
     try {
@@ -266,34 +289,74 @@ export default function ConversasPage() {
   };
 
   /**
-   * O atendente escreve pelo painel. Por padrao o agente e pausado nessa
-   * conversa: pessoa e agente respondendo juntos confunde o contato.
+   * O atendente escreve ou manda um arquivo pelo painel. Por padrao o agente e
+   * pausado nessa conversa: pessoa e agente respondendo juntos confunde o
+   * contato.
+   *
+   * Com arquivo, o texto vai como legenda (o servidor manda a parte quando o
+   * arquivo e audio, que nao tem legenda no WhatsApp).
    */
-  const enviar = async () => {
-    const texto = rascunho.trim();
-    if (!texto || !selecionada || enviando) return;
+  const enviar = async (envio: Envio): Promise<boolean> => {
+    if (!selecionada || enviando) return false;
 
     setEnviando(true);
     setErroEnvio(null);
     try {
-      const r = await conversationsApi.send(
-        selecionada.channelId,
-        selecionada.chatId,
-        texto,
-        assumirAoEnviar
-      );
-      setRascunho('');
-      setDetalhe((d) => (d ? { ...d, mensagens: [...d.mensagens, r.mensagem] } : d));
+      const r = envio.arquivo
+        ? await conversationsApi.sendMedia(
+            selecionada.channelId,
+            selecionada.chatId,
+            envio.arquivo.blob,
+            {
+              mimetype: envio.arquivo.mimetype,
+              nome: envio.arquivo.nome,
+              legenda: envio.texto,
+              voz: envio.arquivo.voz,
+              segundos: envio.arquivo.segundos,
+              pauseAgent: assumirAoEnviar,
+            }
+          )
+        : await conversationsApi.send(
+            selecionada.channelId,
+            selecionada.chatId,
+            envio.texto ?? '',
+            assumirAoEnviar
+          );
+      setDetalhe((d) => (d ? { ...d, mensagens: mesclarMensagens(d.mensagens, [r.mensagem]) } : d));
       if (r.agentePausado) {
         setSelecionada((c) => (c ? { ...c, status: 'PAUSED', pausedReason: 'atendimento_humano' } : c));
       }
       carregar(busca || undefined, canalFiltro || undefined);
+      return true;
     } catch (err) {
       setErroEnvio(err instanceof Error ? err.message : 'Nao foi possivel enviar');
+      return false;
     } finally {
       setEnviando(false);
     }
   };
+
+  /**
+   * Salva no computador todos os arquivos da conversa — o que o contato
+   * mandou e o que o escritorio enviou. Um por vez: o navegador pede
+   * permissao uma unica vez para downloads multiplos e depois segue.
+   */
+  const baixarTodos = async () => {
+    const comArquivo = (detalhe?.mensagens ?? []).filter((m) => m.midia);
+    if (!comArquivo.length || baixandoTodos) return;
+
+    setBaixandoTodos(true);
+    try {
+      for (const m of comArquivo) {
+        await baixarMidia(m.midia!, m.tipo).catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } finally {
+      setBaixandoTodos(false);
+    }
+  };
+
+  const totalArquivos = detalhe?.mensagens.filter((m) => m.midia).length ?? 0;
 
   /**
    * Liga e desliga o agente NESTA conversa.
@@ -606,6 +669,28 @@ export default function ConversasPage() {
                       </div>
                     )}
 
+                    {totalArquivos > 0 && (
+                      <div className="flex items-center justify-between gap-2 border-b border-navy-800 px-5 py-2">
+                        <span className="flex items-center gap-1.5 text-[11px] text-muted">
+                          <Paperclip size={12} />
+                          {totalArquivos} arquivo{totalArquivos === 1 ? '' : 's'} nesta conversa,
+                          guardado{totalArquivos === 1 ? '' : 's'} no servidor
+                        </span>
+                        <button
+                          onClick={baixarTodos}
+                          disabled={baixandoTodos}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-navy-700 px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-gold-500/40 hover:text-gold-200 disabled:opacity-50"
+                        >
+                          {baixandoTodos ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Download size={12} />
+                          )}
+                          Baixar todos
+                        </button>
+                      </div>
+                    )}
+
                     <div className="scrollbar-thin max-h-[26rem] space-y-3 overflow-y-auto p-5">
                       {detalhe?.mensagens.length ? (
                         detalhe.mensagens.map((m) => <Bolha key={m.id} m={m} />)
@@ -668,35 +753,12 @@ export default function ConversasPage() {
                         </p>
                       )}
 
-                      <div className="flex items-end gap-2">
-                        <textarea
-                          value={rascunho}
-                          onChange={(e) => setRascunho(e.target.value)}
-                          onKeyDown={(e) => {
-                            // Enter envia; Shift+Enter quebra linha.
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault();
-                              enviar();
-                            }
-                          }}
-                          rows={2}
-                          maxLength={4000}
-                          placeholder="Escreva como atendente..."
-                          className="scrollbar-thin flex-1 resize-none rounded-xl border border-navy-800 bg-navy-950 px-3 py-2.5 text-sm text-cream outline-none transition-colors focus:border-gold-500/60"
-                        />
-                        <button
-                          onClick={enviar}
-                          disabled={enviando || !rascunho.trim()}
-                          className="inline-flex h-[42px] items-center gap-2 rounded-xl bg-gradient-to-b from-gold-300 to-gold-500 px-4 text-sm font-semibold text-navy-950 transition-all hover:from-gold-200 hover:to-gold-400 disabled:cursor-not-allowed disabled:opacity-35"
-                        >
-                          {enviando ? (
-                            <Loader2 size={15} className="animate-spin" />
-                          ) : (
-                            <Send size={15} />
-                          )}
-                          Enviar
-                        </button>
-                      </div>
+                      <Compositor
+                        key={`${selecionada.channelId}:${selecionada.chatId}`}
+                        enviando={enviando}
+                        aoEnviar={enviar}
+                        aoErro={setErroEnvio}
+                      />
                     </div>
                   </>
                 )}
@@ -708,6 +770,16 @@ export default function ConversasPage() {
     </div>
   );
 }
+
+const ROTULO_MIDIA: Record<string, { texto: string; icone: React.ReactNode }> = {
+  audio: { texto: 'áudio', icone: <Mic size={11} /> },
+  image: { texto: 'imagem', icone: <ImageIcon size={11} /> },
+  video: { texto: 'vídeo', icone: <Video size={11} /> },
+  document: { texto: 'documento', icone: <FileText size={11} /> },
+  sticker: { texto: 'figurinha', icone: <Sticker size={11} /> },
+  location: { texto: 'localização', icone: <MapPin size={11} /> },
+  contact: { texto: 'contato compartilhado', icone: <Contact size={11} /> },
+};
 
 /** Uma mensagem no histórico. Contato à esquerda, agente à direita. */
 function Bolha({ m }: { m: ConversationMessage }) {
@@ -721,8 +793,23 @@ function Bolha({ m }: { m: ConversationMessage }) {
     minute: '2-digit',
   });
 
-  const icone =
-    m.tipo === 'audio' ? <Mic size={11} /> : m.tipo === 'image' ? <ImageIcon size={11} /> : null;
+  const rotulo = ROTULO_MIDIA[m.tipo];
+  const ehMidia = Boolean(rotulo) || Boolean(m.midia);
+
+  /**
+   * O aviso diz O QUE falhou. "Midia nao processada" servia para os dois
+   * casos — arquivo que nao veio e transcricao que nao saiu — e so o
+   * primeiro impede a equipe de ouvir o que o contato disse.
+   */
+  const aviso = !m.erroMidia
+    ? null
+    : !m.midia
+      ? 'Arquivo indisponível'
+      : m.tipo === 'audio'
+        ? 'Transcrição automática indisponível'
+        : m.tipo === 'image'
+          ? 'Leitura automática indisponível'
+          : null;
 
   return (
     <div className={`flex ${doAgente ? 'justify-end' : 'justify-start'}`}>
@@ -736,22 +823,49 @@ function Bolha({ m }: { m: ConversationMessage }) {
                 : 'rounded-br-sm bg-gold-500/15 text-cream'
           }`}
         >
-          {icone && (
-            <span className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
-              {icone}
-              {m.tipo === 'audio' ? 'audio transcrito' : 'imagem'}
-            </span>
+          {!ehMidia ? (
+            <p className="whitespace-pre-wrap">{m.texto || '—'}</p>
+          ) : (
+            <>
+              <span className="mb-1.5 flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
+                {rotulo?.icone}
+                {rotulo?.texto ?? 'arquivo'}
+              </span>
+
+              {m.midia ? (
+                <MidiaDaMensagem midia={m.midia} tipo={m.tipo} />
+              ) : (
+                // Registro anterior ao arquivo ser guardado, ou download que
+                // falhou: sobra o que o sistema conseguiu ler dele.
+                !m.transcricao && !m.descricaoImagem && !m.legenda && <p className="text-muted">—</p>
+              )}
+
+              {m.legenda && <p className="mt-2 whitespace-pre-wrap">{m.legenda}</p>}
+
+              {m.transcricao && (
+                <p className="mt-2 whitespace-pre-wrap border-t border-white/10 pt-2 text-xs text-parchment/90">
+                  <span className="text-[10px] uppercase tracking-wide text-muted">transcrição: </span>
+                  {m.transcricao}
+                </p>
+              )}
+
+              {m.descricaoImagem && (
+                <details className="mt-2 border-t border-white/10 pt-2 text-xs">
+                  <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-muted hover:text-cream">
+                    leitura automática da imagem
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-parchment/90">{m.descricaoImagem}</p>
+                </details>
+              )}
+            </>
           )}
-          <p className="whitespace-pre-wrap">{m.texto || m.transcricao || m.descricaoImagem || '—'}</p>
-          {m.legenda && (
-            <p className="mt-1.5 border-t border-white/10 pt-1.5 text-xs text-muted">
-              legenda: {m.legenda}
-            </p>
-          )}
-          {m.erroMidia && (
-            <p className="mt-1.5 flex items-center gap-1 text-[11px] text-amber-300">
+          {aviso && (
+            <p
+              className="mt-1.5 flex items-center gap-1 text-[11px] text-amber-300"
+              title={m.erroMidia ?? undefined}
+            >
               <TriangleAlert size={11} />
-              midia nao processada
+              {aviso}
             </p>
           )}
         </div>

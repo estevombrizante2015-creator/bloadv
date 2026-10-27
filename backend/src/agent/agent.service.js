@@ -98,7 +98,9 @@ async function persistParts({
     // fila do WhatsApp, gravar "agora" jogaria para o fim da conversa algo que
     // foi dito horas antes.
     ...(createdAt ? { createdAt } : {}),
-    type: part.type,
+    // Video e documento viram `unsupported` para o agente, mas no historico
+    // valem pelo que sao: e o tipo que diz ao painel como exibir o arquivo.
+    type: part.originalType || part.type,
     text: part.content || part.transcription || part.caption || null,
     transcription: part.transcription || null,
     imageDescription: part.description || null,
@@ -106,6 +108,9 @@ async function persistParts({
     mediaMimeType: part.mediaMimeType || null,
     mediaBytes: part.mediaBytes || null,
     mediaError: part.error || null,
+    mediaFileId: part.mediaFileId || null,
+    mediaFileName: part.mediaFileName || null,
+    mediaSeconds: part.seconds || null,
     batchId,
     batchSize: parts.length,
     seq: startSeq + i,

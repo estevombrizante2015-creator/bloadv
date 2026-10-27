@@ -1,4 +1,5 @@
 const mediaService = require('./media.service');
+const mediaStore = require('./media.store');
 const multimodal = require('../agent/multimodal.service');
 const logger = require('../utils/logger');
 
@@ -9,6 +10,9 @@ const logger = require('../utils/logger');
  *   { type: 'text',  content: '...' }
  *   { type: 'audio', transcription: '...', failed?: true }
  *   { type: 'image', description: '...', caption: '...', failed?: true }
+ *
+ * Toda parte com midia carrega tambem `mediaFileId`: o arquivo guardado (ver
+ * media.store), para o painel tocar o audio e mostrar a imagem.
  *
  * Assim o buffer, o agente e a persistencia nao precisam saber nada de WhatsApp.
  */
@@ -53,6 +57,9 @@ function unwrap(message) {
     message?.ephemeralMessage?.message ||
     message?.viewOnceMessage?.message ||
     message?.viewOnceMessageV2?.message ||
+    message?.viewOnceMessageV2Extension?.message ||
+    // Documento com legenda chega embrulhado; sem isto virava "mensagem".
+    message?.documentWithCaptionMessage?.message ||
     message
   );
 }
@@ -66,22 +73,65 @@ const FALLBACK_LABEL = {
   unknown: 'mensagem',
 };
 
+/** Tipos que trazem arquivo: o painel precisa do arquivo para exibi-los. */
+const COM_ARQUIVO = new Set(['audio', 'image', 'video', 'document', 'sticker']);
+
+const EXTENSAO_PADRAO = {
+  audio: 'ogg',
+  image: 'jpg',
+  video: 'mp4',
+  sticker: 'webp',
+  document: 'bin',
+};
+
+/**
+ * Baixa a midia e guarda o arquivo. Download que falha devolve `{ media }`
+ * com `ok: false`; guardar que falha so deixa a parte sem `mediaFileId`.
+ */
+async function baixarEGuardar({ msg, inner, type, sock, channelId, chatId, origem }) {
+  const media = await mediaService.download({ msg, inner, type, sock, channelId });
+  if (!media.ok) return { media, arquivo: {} };
+
+  const nome = media.fileName || `${type}.${EXTENSAO_PADRAO[type] || 'bin'}`;
+  const guardado = await mediaStore.salvar({
+    buffer: media.buffer,
+    mimetype: media.mimetype,
+    nome,
+    channelId,
+    chatId,
+    origem,
+  });
+
+  return {
+    media,
+    arquivo: {
+      mediaMimeType: media.mimetype,
+      mediaBytes: media.bytes,
+      ...(media.seconds ? { seconds: media.seconds } : {}),
+      ...(guardado ? { mediaFileId: guardado.fileId, mediaFileName: nome } : {}),
+    },
+  };
+}
+
 /**
  * Normaliza uma mensagem, processando midia quando necessario.
  * NUNCA lanca: qualquer falha vira uma parte marcada com `failed`, para o
  * agente saber que houve algo e poder pedir reenvio.
  *
- * @returns {Promise<object|null>} parte normalizada, ou null se deve ser ignorada
- */
-/**
  * @param {object} [midia] o que a curadoria autoriza interpretar neste agente.
  *   Desligar audio ou imagem NAO descarta a mensagem: ela vira uma parte
  *   marcada, o agente e avisado que nao consegue ler aquilo e pede o conteudo
  *   em texto. Descartar em silencio deixaria o contato falando sozinho, que e
  *   o pior desfecho possivel para quem mandou um audio pedindo ajuda.
+ *
+ *   `midia.guardar: false` dispensa ate o arquivo — so no loop de bot, em que
+ *   a outra ponta e suspeita de ser automatica e ninguem esta lendo.
+ *
+ * @returns {Promise<object|null>} parte normalizada, ou null se deve ser ignorada
  */
-async function normalize({ msg, channelId, chatId, sock, conversationHint, midia }) {
+async function normalize({ msg, channelId, chatId, sock, conversationHint, midia, origem = 'contato' }) {
   const interpretar = { audio: midia?.audio !== false, imagem: midia?.imagem !== false };
+  const guardar = midia?.guardar !== false;
   const inner = unwrap(msg.message);
   const type = messageType(inner);
   const timestamp = Number(msg.messageTimestamp) * 1000 || Date.now();
@@ -101,12 +151,28 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint, midia
     return { ...base, content };
   }
 
+  // O arquivo e baixado mesmo com a interpretacao desligada: a equipe precisa
+  // ouvir o audio que o agente nao pode ouvir.
+  const precisaBaixar =
+    COM_ARQUIVO.has(type) &&
+    (guardar || (type === 'audio' && interpretar.audio) || (type === 'image' && interpretar.imagem));
+
+  const { media, arquivo } = precisaBaixar
+    ? await baixarEGuardar({ msg, inner, type, sock, channelId, chatId, origem })
+    : { media: null, arquivo: {} };
+
   if (type === 'audio') {
     if (!interpretar.audio) {
-      return { ...base, failed: true, naoInterpretada: true, transcription: null };
+      return {
+        ...base,
+        ...arquivo,
+        failed: true,
+        naoInterpretada: true,
+        transcription: null,
+        ...(media && !media.ok ? { error: media.error } : {}),
+      };
     }
 
-    const media = await mediaService.download({ msg, type: 'audio', sock, channelId });
     if (!media.ok) {
       return { ...base, failed: true, error: media.error, transcription: null };
     }
@@ -120,9 +186,7 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint, midia
 
     return {
       ...base,
-      mediaMimeType: media.mimetype,
-      mediaBytes: media.bytes,
-      seconds: media.seconds,
+      ...arquivo,
       transcription: result.ok ? result.text : null,
       failed: !result.ok,
       error: result.ok ? undefined : result.error,
@@ -133,10 +197,16 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint, midia
     const caption = (extractText(inner) || '').trim() || null;
 
     if (!interpretar.imagem) {
-      return { ...base, caption, failed: true, naoInterpretada: true, description: null };
+      return {
+        ...base,
+        ...arquivo,
+        caption,
+        failed: true,
+        naoInterpretada: true,
+        description: null,
+        ...(media && !media.ok ? { error: media.error } : {}),
+      };
     }
-
-    const media = await mediaService.download({ msg, type: 'image', sock, channelId });
 
     if (!media.ok) {
       return { ...base, caption, failed: true, error: media.error, description: null };
@@ -153,9 +223,8 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint, midia
 
     return {
       ...base,
+      ...arquivo,
       caption,
-      mediaMimeType: media.mimetype,
-      mediaBytes: media.bytes,
       description: result.ok ? result.description : null,
       visionUsage: result.usage || null,
       failed: !result.ok,
@@ -163,15 +232,18 @@ async function normalize({ msg, channelId, chatId, sock, conversationHint, midia
     };
   }
 
-  // Tipos nao suportados entram como marcador, com a legenda se houver.
+  // Tipos nao suportados entram como marcador, com a legenda se houver. O
+  // agente nao le video nem documento, mas o arquivo fica para a equipe.
   const caption = (extractText(inner) || '').trim() || null;
   logger.debug({ channelId, chatId, type }, 'Tipo de mensagem sem processamento dedicado');
   return {
     ...base,
+    ...arquivo,
     type: 'unsupported',
     originalType: type,
     label: FALLBACK_LABEL[type] || 'mensagem',
     caption,
+    ...(media && !media.ok ? { error: media.error } : {}),
   };
 }
 

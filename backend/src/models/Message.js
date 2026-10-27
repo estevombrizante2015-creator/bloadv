@@ -17,6 +17,11 @@ const MessageSchema = new mongoose.Schema(
     mediaMimeType: String,
     mediaBytes: Number,
     mediaError: String,
+    // O arquivo em si, no GridFS (ver whatsapp/media.store). Sem ele o painel
+    // so tem a transcricao para mostrar.
+    mediaFileId: mongoose.Schema.Types.ObjectId,
+    mediaFileName: String,
+    mediaSeconds: Number,
     // Quando a mensagem faz parte de um lote consolidado pelo buffer.
     batchId: { type: String, index: true },
     batchSize: Number,

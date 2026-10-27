@@ -259,6 +259,24 @@ expirado viram uma parte marcada (`[audio recebido, não foi possível transcrev
 e o agente é instruído a pedir reenvio com naturalidade. Ver
 [message.normalizer.js](backend/src/whatsapp/message.normalizer.js).
 
+### O arquivo fica guardado
+
+Todo áudio, imagem, vídeo, documento e figurinha é **baixado assim que chega e
+guardado no próprio MongoDB** (GridFS, bucket `midias` — ver
+[media.store.js](backend/src/whatsapp/media.store.js)). Vale também para o que
+o escritório envia, pelo painel ou pelo celular. Em `/conversas` a equipe ouve o
+áudio, vê a imagem e baixa o documento — inclusive quando a transcrição falhou ou
+a interpretação está desligada na curadoria — sem depender do celular. Só não se
+guarda nada de conversa em loop de bot.
+
+Pelo painel o atendente também envia arquivo (anexo, colar print ou arrastar),
+emoji e **áudio gravado no navegador**, que o servidor converte para nota de voz
+do WhatsApp (OGG/Opus, via `ffmpeg-static`). Sem o ffmpeg, a gravação segue como
+documento — chega, mas não como mensagem de voz.
+
+Mensagens recebidas antes desta versão não têm arquivo: o WhatsApp não guarda
+mídia para baixar de novo depois.
+
 ---
 
 ## Proteção bot × bot
@@ -844,6 +862,7 @@ buffer — quem nunca abrir a curadoria continua com o atendimento que já tinha
 | `ANTILOOP_MIN_HUMAN_GAP_MS` | `1500` | piso de intervalo humano |
 | `WHISPER_MODEL` | `whisper-1` | transcrição de áudio |
 | `VISION_MODEL` | `gpt-4o-mini` | leitura de imagem |
+| `MEDIA_FILE_MAX_BYTES` | `16777216` | vídeo/documento recebido e arquivo enviado pelo painel |
 | `KNOWLEDGE_BACKEND` | `memory` | `mongo` liga a busca semântica |
 | `ONTOLOGY_RECENT_TURNS` | `6` | mensagens cruas no contexto |
 | `GUARD_DAILY_TOKEN_BUDGET` | `40000` | teto por contato/dia |
